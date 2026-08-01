@@ -2,66 +2,89 @@ import { useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
 import { TableCanvas } from './TableCanvas.tsx'
 import { createGameStore } from './store.ts'
+import { createLoopbackTransport } from './loopback.ts'
 import { legalActions } from './engine/game.ts'
 import { ginDiscards } from './engine/melds.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
-import type { Seat } from './engine/game.ts'
+import type { Action, Seat } from './engine/game.ts'
 import type { Card } from './engine/cards.ts'
 
-// Single-tab dev harness: one local store, hotseat perspective (the
-// acting seat's hand faces up at the bottom), submits applied straight
-// to the store. The loopback transport replaces this submit path next.
+// ?seat=a runs the creating tab (sequencer shim), ?seat=b joins it over
+// the BroadcastChannel loopback; no param is the single-tab hotseat
+// harness. In loopback modes every action goes submit -> stamp -> echo;
+// the store only ever applies stamped actions.
+const params = new URLSearchParams(window.location.search)
+const mode: 'solo' | 'creator' | 'joiner' =
+  params.get('seat') === 'b' ? 'joiner' : params.get('seat') === 'a' ? 'creator' : 'solo'
+
 const store = createGameStore()
-store.start({ seed: Date.now() >>> 0, dealer: 'a', viewerSeat: 'a' })
+let submit: (action: Action) => void
+if (mode === 'solo') {
+  store.start({ seed: Date.now() >>> 0, dealer: 'a', viewerSeat: 'a' })
+  submit = (action) => store.apply(action)
+} else {
+  const transport = createLoopbackTransport({ role: mode, store, seed: Date.now() >>> 0 })
+  submit = (action) => transport.submit(action)
+}
 
 function App() {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const game = snapshot.game
-  const acting: Seat = game?.toAct ?? game?.dealer ?? 'a'
-  const legal = game ? legalActions(game, acting) : []
+  const seatToPlay: Seat =
+    mode === 'solo'
+      ? (game?.toAct ?? game?.dealer ?? 'a')
+      : (snapshot.viewerSeat ?? 'a')
+  const legal = game ? legalActions(game, seatToPlay) : []
   const selected = snapshot.selectedCard
 
   const ginKeys = new Set(
-    game && game.phase === 'discard' ? ginDiscards(game.hands[acting]).map(cardKey) : [],
+    game && game.phase === 'discard' && game.toAct === seatToPlay
+      ? ginDiscards(game.hands[seatToPlay]).map(cardKey)
+      : [],
   )
   const discardBlocked =
     selected && game?.takenFromDiscard ? sameCard(selected, game.takenFromDiscard) : false
 
   const submitDiscard = (declareGin: boolean) => {
-    if (selected) store.apply({ type: 'discard', seat: acting, card: selected, declareGin })
+    if (selected) submit({ type: 'discard', seat: seatToPlay, card: selected, declareGin })
   }
 
   const handlers = {
     onCardClick: (clicked: Card) => {
-      const held = game?.hands[acting].some((own) => sameCard(own, clicked)) ?? false
+      const held = game?.hands[seatToPlay].some((own) => sameCard(own, clicked)) ?? false
       if (!held) return
       store.selectCard(selected && sameCard(clicked, selected) ? null : clicked)
     },
     onStockClick: () => {
-      if (legal.includes('drawStock')) store.apply({ type: 'drawStock', seat: acting })
+      if (legal.includes('drawStock')) submit({ type: 'drawStock', seat: seatToPlay })
     },
     onDiscardClick: () => {
-      if (legal.includes('takeUpcard')) store.apply({ type: 'takeUpcard', seat: acting })
-      else if (legal.includes('drawDiscard')) store.apply({ type: 'drawDiscard', seat: acting })
+      if (legal.includes('takeUpcard')) submit({ type: 'takeUpcard', seat: seatToPlay })
+      else if (legal.includes('drawDiscard')) submit({ type: 'drawDiscard', seat: seatToPlay })
       else if (legal.includes('discard') && selected && !discardBlocked) submitDiscard(false)
     },
   }
 
-  const status = game?.result
-    ? game.result.type === 'gin'
-      ? `Gin! Seat ${game.result.winner} wins by ${game.result.margin}.`
-      : 'Dead hand - the stock ran out.'
-    : game
-      ? `${game.phase} - seat ${acting} to act`
+  const seatLabel = mode === 'solo' ? 'hotseat' : `seat ${seatToPlay} (${mode})`
+  const status = !game
+    ? mode === 'joiner'
+      ? 'waiting for the creating tab (open ?seat=a)'
       : 'no game'
+    : game.result
+      ? game.result.type === 'gin'
+        ? `Gin! Seat ${game.result.winner} wins by ${game.result.margin}.`
+        : 'Dead hand - the stock ran out.'
+      : game.toAct === seatToPlay || mode === 'solo'
+        ? `${game.phase} - seat ${seatToPlay} to act`
+        : `waiting - seat ${game.toAct ?? '?'} is thinking`
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <TableCanvas snapshot={snapshot} perspective={acting} handlers={handlers} />
+      <TableCanvas snapshot={snapshot} perspective={seatToPlay} handlers={handlers} />
       <div style={overlayStyle}>
-        <span>{status}</span>
+        <span>{`[${seatLabel}] ${status}`}</span>
         {legal.includes('startHand') && (
-          <button type="button" onClick={() => store.apply({ type: 'startHand' })}>
+          <button type="button" onClick={() => submit({ type: 'startHand' })}>
             Deal
           </button>
         )}
@@ -71,12 +94,12 @@ function App() {
           </button>
         )}
         {legal.includes('takeUpcard') && (
-          <button type="button" onClick={() => store.apply({ type: 'takeUpcard', seat: acting })}>
+          <button type="button" onClick={() => submit({ type: 'takeUpcard', seat: seatToPlay })}>
             Take upcard
           </button>
         )}
         {legal.includes('passUpcard') && (
-          <button type="button" onClick={() => store.apply({ type: 'passUpcard', seat: acting })}>
+          <button type="button" onClick={() => submit({ type: 'passUpcard', seat: seatToPlay })}>
             Pass
           </button>
         )}

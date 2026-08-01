@@ -92,6 +92,27 @@ test('a joiner that opened first still bootstraps when the creator arrives', asy
 // behaviour is observable as MESSAGES, not just as state equality: the
 // gap must produce a resyncRequest on the wire, and the resync reply
 // must rebuild the client exactly.
+test('a stamp outrunning the bootstrap asks for resync instead of throwing', async () => {
+  const channelName = freshChannel()
+  const sequencer = new BroadcastChannel(channelName)
+  let resyncRequests = 0
+  sequencer.addEventListener('message', (event) => {
+    if ((event as MessageEvent).data?.kind === 'resyncRequest') resyncRequests += 1
+  })
+  const joinerStore = createGameStore()
+  const joiner = createLoopbackTransport({ role: 'joiner', store: joinerStore, channelName })
+  await flush()
+  expect(resyncRequests).toBe(1)
+
+  sequencer.postMessage({ kind: 'action', seq: 1, action: { type: 'startHand' } })
+  await flush()
+  expect(resyncRequests).toBe(2)
+  expect(joinerStore.getSnapshot().game).toBeNull()
+
+  sequencer.close()
+  joiner.destroy()
+})
+
 test('a gap makes the client request resync by message, then rebuild from the log', async () => {
   const channelName = freshChannel()
   const sequencer = new BroadcastChannel(channelName)

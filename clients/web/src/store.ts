@@ -8,12 +8,17 @@ export interface GameSnapshot {
   readonly viewerSeat: Seat | null
   readonly selectedCard: Card | null
   readonly autoGroup: boolean
-  readonly lastDrawn: Card | null
+  readonly lastDrawn: { readonly seat: Seat; readonly card: Card } | null
 }
 
-// The card an accepted draw added to the acting hand; anything else (a
-// discard, a deal) ends the turn's "just drawn" marker.
-function drawnBy(before: EngineState, after: EngineState, action: Action): Card | null {
+// The card an accepted draw added to the acting hand, tagged with whose
+// draw it was so readers must say which seat they care about; anything
+// else (a discard, a deal) ends the turn's "just drawn" marker.
+function drawnBy(
+  before: EngineState,
+  after: EngineState,
+  action: Action,
+): { seat: Seat; card: Card } | null {
   if (
     action.type !== 'drawStock' &&
     action.type !== 'drawDiscard' &&
@@ -22,7 +27,8 @@ function drawnBy(before: EngineState, after: EngineState, action: Action): Card 
     return null
   }
   const held = new Set(before.hands[action.seat].map(cardKey))
-  return after.hands[action.seat].find((card) => !held.has(cardKey(card))) ?? null
+  const card = after.hands[action.seat].find((added) => !held.has(cardKey(added)))
+  return card ? { seat: action.seat, card } : null
 }
 
 export interface GameStore {
@@ -57,12 +63,22 @@ export function createGameStore(): GameStore {
     getSnapshot() {
       return snapshot
     },
+    // A start rebuilds from scratch, per the resync contract: no UI
+    // residue from the discarded game survives.
     start({ seed, dealer, viewerSeat }) {
-      replace({ ...snapshot, game: initialState(seed, dealer), viewerSeat })
+      replace({
+        ...snapshot,
+        game: initialState(seed, dealer),
+        viewerSeat,
+        selectedCard: null,
+        lastDrawn: null,
+      })
     },
-    // Stamped, in-order actions only - sequencing and dedup are the
-    // transport's job. A rejection is a deterministic no-op: state and
-    // subscribers stay untouched.
+    // Transport-fed actions arrive stamped and in order - sequencing and
+    // dedup are the transport's job. The solo hotseat harness applies
+    // directly by design; if apply ever grows sequencing parameters,
+    // solo grows its trivial counter then. A rejection is a
+    // deterministic no-op: state and subscribers stay untouched.
     apply(action) {
       if (!snapshot.game) throw new Error('action applied before the start contract')
       const result = advance(snapshot.game, action)

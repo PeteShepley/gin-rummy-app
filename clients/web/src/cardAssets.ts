@@ -1,8 +1,8 @@
 import type { Card } from './engine/cards.ts'
 
 // Vite glob over the vendored Knoll faces; keys look like
-// './assets/cards/A-clubs.svg'. Eager so a missing file fails at build
-// and the completeness test, not at first render.
+// './assets/cards/A-clubs.svg'. A missing or misnamed file throws at
+// the first lookup for that card.
 const assetUrls = import.meta.glob('./assets/cards/*.svg', {
   eager: true,
   query: '?url',

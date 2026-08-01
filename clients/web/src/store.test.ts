@@ -76,25 +76,44 @@ test('a stamped action arriving before the start contract fails loudly', () => {
   expect(() => store.apply({ type: 'startHand' })).toThrow('before the start contract')
 })
 
-test('the just-drawn card is remembered until the turn ends', () => {
+test('the just-drawn card is remembered, with its seat, until the turn ends', () => {
   const store = createGameStore()
   store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
   store.apply({ type: 'startHand' })
   expect(store.getSnapshot().lastDrawn).toBeNull()
   store.apply({ type: 'passUpcard', seat: 'b' })
   store.apply({ type: 'passUpcard', seat: 'a' })
+  const stockTop = store.getSnapshot().game!.stock[0]
   store.apply({ type: 'drawStock', seat: 'b' })
-  expect(store.getSnapshot().lastDrawn).toEqual(cards('8:diamonds')[0])
-  store.apply({ type: 'discard', seat: 'b', card: cards('4:diamonds')[0], declareGin: false })
+  expect(store.getSnapshot().lastDrawn).toEqual({ seat: 'b', card: stockTop })
+  const held = store.getSnapshot().game!.hands.b[0]
+  store.apply({ type: 'discard', seat: 'b', card: held, declareGin: false })
   expect(store.getSnapshot().lastDrawn).toBeNull()
 })
 
-test('taking the upcard also marks the drawn card', () => {
+test('taking the upcard also marks the drawn card with its seat', () => {
   const store = createGameStore()
   store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
   store.apply({ type: 'startHand' })
+  const pile = store.getSnapshot().game!.discardPile
+  const upcard = pile[pile.length - 1]
   store.apply({ type: 'takeUpcard', seat: 'b' })
-  expect(store.getSnapshot().lastDrawn).toEqual(cards('7:clubs')[0])
+  expect(store.getSnapshot().lastDrawn).toEqual({ seat: 'b', card: upcard })
+})
+
+test('start rebuilds from scratch: selection and draw marker reset', () => {
+  const store = createGameStore()
+  store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
+  store.apply({ type: 'startHand' })
+  store.apply({ type: 'passUpcard', seat: 'b' })
+  store.apply({ type: 'passUpcard', seat: 'a' })
+  store.apply({ type: 'drawStock', seat: 'b' })
+  store.selectCard(store.getSnapshot().game!.hands.b[0])
+  expect(store.getSnapshot().lastDrawn).not.toBeNull()
+  expect(store.getSnapshot().selectedCard).not.toBeNull()
+  store.start({ seed: 7, dealer: 'a', viewerSeat: 'b' })
+  expect(store.getSnapshot().selectedCard).toBeNull()
+  expect(store.getSnapshot().lastDrawn).toBeNull()
 })
 
 test('auto-group is a persistent preference: toggles, notifies, survives actions', () => {

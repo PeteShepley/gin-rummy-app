@@ -3,8 +3,9 @@ import type { Application, Texture } from 'pixi.js'
 import { cardAssetUrl } from './cardAssets.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
 import { newDeck } from './engine/deck.ts'
-import { bestArrangement, ginDiscards } from './engine/melds.ts'
+import { bestArrangement } from './engine/melds.ts'
 import { otherSeat } from './engine/game.ts'
+import type { Arrangement } from './engine/melds.ts'
 import type { Seat } from './engine/game.ts'
 import type { Card } from './engine/cards.ts'
 import type { GameSnapshot } from './store.ts'
@@ -18,27 +19,32 @@ const DEADWOOD_TINT = 0xbdbdbd
 const GIN_TINT = 0xffd54a
 
 // The canvas mount captures this module in a closure; a hot update would
-// leave that stale closure rendering old code. Force a full reload.
+// leave that stale closure rendering old code. invalidate() only bubbles
+// to the React boundary (verified against the dev-server log), so reload
+// outright.
 if (import.meta.hot) {
   import.meta.hot.accept(() => {
-    import.meta.hot?.invalidate()
+    window.location.reload()
   })
 }
 
 export interface SceneHandlers {
   onCardClick(card: Card): void
   onStockClick(): void
-  onDiscardClick(): void
+  onDiscardPileClick(): void
 }
 
 export interface TableScene {
-  update(snapshot: GameSnapshot, perspective: Seat): void
+  update(snapshot: GameSnapshot, perspective: Seat, ginKeys: ReadonlySet<string>): void
   destroy(): void
 }
 
-// The scene owns sprites and layout; the store owns truth. v1 rebuilds
-// the sprite graph on every update - cheap at ~52 sprites, and a
-// diffing reconciler earns its keep only once tweens arrive.
+// The scene owns sprites and layout; the store owns truth; the shell
+// derives the gin offer and passes it in. update() derives everything
+// game-shaped once per snapshot; layout() is geometry only, so resizes
+// never re-run the meld search. v1 rebuilds the sprite graph on every
+// update - cheap at ~52 sprites, and a diffing reconciler earns its
+// keep only once tweens arrive.
 export async function createTableScene(
   app: Application,
   handlers: SceneHandlers,
@@ -53,7 +59,14 @@ export async function createTableScene(
   const root = new Container()
   app.stage.addChild(root)
 
-  let last: { snapshot: GameSnapshot; perspective: Seat } | null = null
+  interface Derived {
+    snapshot: GameSnapshot
+    perspective: Seat
+    ginKeys: ReadonlySet<string>
+    reveal: { top: Arrangement; bottom: Arrangement } | null
+    handGroups: readonly (readonly Card[])[]
+  }
+  let last: Derived | null = null
 
   const face = (of: Card): Texture => {
     const texture = faces.get(cardKey(of))
@@ -80,38 +93,29 @@ export async function createTableScene(
   const layout = () => {
     if (!last) return
     for (const child of root.removeChildren()) child.destroy({ children: true })
-    const { snapshot, perspective } = last
+    const { snapshot, perspective, ginKeys, reveal, handGroups } = last
     const game = snapshot.game
     if (!game) return
     const { width, height } = app.screen
 
-    // The engine names the discards that go gin; the scene offers them
-    // proactively (gold tint) for the acting viewer.
-    const ginKeys =
-      game.phase === 'discard' && game.toAct === perspective
-        ? new Set(ginDiscards(game.hands[perspective]).map(cardKey))
-        : new Set<string>()
-
-    // The lay-down: a finished hand is proof, so both hands show face up,
-    // clustered by their best arrangement, deadwood greyed.
-    const reveal = (hand: readonly Card[], y: number) => {
-      const arrangement = bestArrangement(hand)
-      const deadwoodKeys = new Set(arrangement.deadwood.map(cardKey))
-      for (const placed of groupedXs([...arrangement.melds, arrangement.deadwood], width)) {
-        const sprite = card(face(placed.held), placed.x, y)
-        if (deadwoodKeys.has(cardKey(placed.held))) sprite.tint = DEADWOOD_TINT
+    // The lay-down: a finished hand is proof, so both hands show face
+    // up, clustered by their best arrangement, deadwood greyed.
+    if (reveal) {
+      const show = (arrangement: Arrangement, y: number) => {
+        const deadwoodKeys = new Set(arrangement.deadwood.map(cardKey))
+        for (const placed of groupedXs([...arrangement.melds, arrangement.deadwood], width)) {
+          const sprite = card(face(placed.held), placed.x, y)
+          if (deadwoodKeys.has(cardKey(placed.held))) sprite.tint = DEADWOOD_TINT
+        }
       }
-    }
-
-    if (game.phase === 'handOver') {
-      reveal(game.hands[otherSeat(perspective)], EDGE + CARD_H / 2)
-      reveal(game.hands[perspective], height - EDGE - CARD_H / 2)
+      show(reveal.top, EDGE + CARD_H / 2)
+      show(reveal.bottom, height - EDGE - CARD_H / 2)
       return
     }
 
-    rowXs(game.hands[otherSeat(perspective)].length, width).forEach((x) => {
-      card(back, x, EDGE + CARD_H / 2)
-    })
+    for (const placed of groupedXs([game.hands[otherSeat(perspective)]], width)) {
+      card(back, placed.x, EDGE + CARD_H / 2)
+    }
 
     if (game.stock.length > 0) {
       const stockX = width / 2 - CARD_W * 0.75
@@ -128,28 +132,25 @@ export async function createTableScene(
     const slotX = width / 2 + CARD_W * 0.75
     const top = game.discardPile[game.discardPile.length - 1]
     if (top) {
-      clickable(card(face(top), slotX, height / 2), handlers.onDiscardClick)
+      clickable(card(face(top), slotX, height / 2), handlers.onDiscardPileClick)
     } else {
       const slot = new Graphics()
         .roundRect(slotX - CARD_W / 2, height / 2 - CARD_H / 2, CARD_W, CARD_H, 8)
         .fill({ color: 0xffffff, alpha: 0.08 })
         .stroke({ width: 2, color: 0xffffff, alpha: 0.5 })
-      clickable(slot, handlers.onDiscardClick)
+      clickable(slot, handlers.onDiscardPileClick)
       root.addChild(slot)
     }
 
-    const hand = game.hands[perspective]
-    const handGroups = snapshot.autoGroup
-      ? (() => {
-          const arrangement = bestArrangement(hand)
-          return [...arrangement.melds, arrangement.deadwood]
-        })()
-      : [hand]
     for (const placed of groupedXs(handGroups, width)) {
       const held = placed.held
       const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? RAISE : 0
       const y = height - EDGE - CARD_H / 2 - raised
-      if (snapshot.lastDrawn && sameCard(held, snapshot.lastDrawn)) {
+      if (
+        snapshot.lastDrawn &&
+        snapshot.lastDrawn.seat === perspective &&
+        sameCard(held, snapshot.lastDrawn.card)
+      ) {
         const halo = new Graphics()
           .roundRect(placed.x - (CARD_W + 10) / 2, y - (CARD_H + 10) / 2, CARD_W + 10, CARD_H + 10, 10)
           .stroke({ width: 3, color: 0x7fd1ff })
@@ -165,8 +166,25 @@ export async function createTableScene(
   app.renderer.on('resize', onResize)
 
   return {
-    update(snapshot, perspective) {
-      last = { snapshot, perspective }
+    update(snapshot, perspective, ginKeys) {
+      const game = snapshot.game
+      const reveal =
+        game && game.phase === 'handOver'
+          ? {
+              top: bestArrangement(game.hands[otherSeat(perspective)]),
+              bottom: bestArrangement(game.hands[perspective]),
+            }
+          : null
+      let handGroups: readonly (readonly Card[])[] = []
+      if (game && game.phase !== 'handOver') {
+        if (snapshot.autoGroup) {
+          const arrangement = bestArrangement(game.hands[perspective])
+          handGroups = [...arrangement.melds, arrangement.deadwood]
+        } else {
+          handGroups = [game.hands[perspective]]
+        }
+      }
+      last = { snapshot, perspective, ginKeys, reveal, handGroups }
       layout()
     },
     destroy() {
@@ -176,14 +194,8 @@ export async function createTableScene(
   }
 }
 
-function rowXs(count: number, width: number): number[] {
-  if (count === 0) return []
-  const spacing = Math.min(CARD_W + 10, (width - CARD_W - EDGE * 2) / Math.max(count - 1, 1))
-  const start = width / 2 - (spacing * (count - 1)) / 2
-  return Array.from({ length: count }, (_, i) => start + i * spacing)
-}
-
-// Lays out a row of card groups with a visible gap at group boundaries.
+// Lays out a row of card groups with a visible gap at group boundaries;
+// a single group is a plain evenly-spaced row.
 function groupedXs(
   groups: readonly (readonly Card[])[],
   width: number,

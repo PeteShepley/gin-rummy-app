@@ -41,13 +41,21 @@ export function createLoopbackTransport(options: {
   const mySeat = seats[role]
 
   let expectedSeq = 1
+  let contractApplied = false
 
   const applyContract = (contract: Contract) => {
     store.start({ seed: contract.seed, dealer: contract.dealer, viewerSeat: mySeat })
     expectedSeq = 1
+    contractApplied = true
   }
 
   const inbox = (stamped: Stamped) => {
+    // A stamp outrunning the bootstrap is a gap by another name: ask for
+    // the full picture rather than applying into a store with no game.
+    if (!contractApplied) {
+      channel.postMessage({ kind: 'resyncRequest' } satisfies WireMessage)
+      return
+    }
     if (stamped.seq < expectedSeq) return
     if (stamped.seq > expectedSeq) {
       channel.postMessage({ kind: 'resyncRequest' } satisfies WireMessage)
@@ -60,10 +68,11 @@ export function createLoopbackTransport(options: {
   let sequencer: { contract: Contract; log: Stamped[]; nextSeq: number } | null = null
 
   const stamp = (action: Action) => {
-    if (!sequencer) return
-    const stamped: Stamped = { seq: sequencer.nextSeq, action }
-    sequencer.nextSeq += 1
-    sequencer.log.push(stamped)
+    const shim = sequencer
+    if (!shim) return // narrowing only - callers guard visibly
+    const stamped: Stamped = { seq: shim.nextSeq, action }
+    shim.nextSeq += 1
+    shim.log.push(stamped)
     channel.postMessage({ kind: 'action', ...stamped } satisfies WireMessage)
     // BroadcastChannel never echoes to the posting tab, so the shim hands
     // its own client the stamp directly - the same echo discipline.
@@ -83,7 +92,10 @@ export function createLoopbackTransport(options: {
     const message = event.data as WireMessage
     switch (message.kind) {
       case 'submit':
-        stamp(message.action)
+        // Only the sequencer stamps; a joiner ignores peer submits. (A
+        // submit with no sequencer alive anywhere - the creating tab
+        // closed - goes unanswered and the submitter sees no change.)
+        if (sequencer) stamp(message.action)
         break
       case 'action':
         inbox({ seq: message.seq, action: message.action })
@@ -99,6 +111,8 @@ export function createLoopbackTransport(options: {
         break
       case 'resyncRequest':
         if (sequencer) {
+          // The schema's words: `start` marks a second seat joining a
+          // fresh room; `resync` is the mid-game bootstrap.
           const reply: WireMessage =
             sequencer.log.length === 0
               ? { kind: 'start', ...sequencer.contract }

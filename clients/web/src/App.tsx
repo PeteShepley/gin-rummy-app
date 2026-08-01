@@ -3,10 +3,11 @@ import type { CSSProperties } from 'react'
 import { TableCanvas } from './TableCanvas.tsx'
 import { createGameStore } from './store.ts'
 import { createLoopbackTransport } from './loopback.ts'
+import type { LoopbackTransport } from './loopback.ts'
 import { legalActions } from './engine/game.ts'
 import { ginDiscards } from './engine/melds.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
-import type { Action, Seat } from './engine/game.ts'
+import type { Action, EngineState, Seat } from './engine/game.ts'
 import type { Card } from './engine/cards.ts'
 
 // ?seat=a runs the creating tab (sequencer shim), ?seat=b joins it over
@@ -18,26 +19,58 @@ const mode: 'solo' | 'creator' | 'joiner' =
   params.get('seat') === 'b' ? 'joiner' : params.get('seat') === 'a' ? 'creator' : 'solo'
 
 const store = createGameStore()
+let transport: LoopbackTransport | null = null
 let submit: (action: Action) => void
 if (mode === 'solo') {
   store.start({ seed: Date.now() >>> 0, dealer: 'a', viewerSeat: 'a' })
   submit = (action) => store.apply(action)
 } else {
-  const transport = createLoopbackTransport({ role: mode, store, seed: Date.now() >>> 0 })
-  submit = (action) => transport.submit(action)
+  const live = createLoopbackTransport({ role: mode, store, seed: Date.now() >>> 0 })
+  transport = live
+  submit = (action) => live.submit(action)
+}
+
+// This top-level bootstrap re-runs on any hot update that reaches this
+// module; a second live transport would corrupt the room. Dispose the
+// old one and reload outright (invalidate() would stop at the React
+// refresh boundary - verified against the dev-server log).
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload()
+  })
+  import.meta.hot.dispose(() => {
+    transport?.destroy()
+  })
+}
+
+function statusFor(game: EngineState | null, seatToPlay: Seat): string {
+  if (!game) {
+    return mode === 'joiner' ? 'waiting for the creating tab (open ?seat=a)' : 'no game'
+  }
+  if (game.result) {
+    return game.result.type === 'gin'
+      ? `Gin! Seat ${game.result.winner} wins by ${game.result.margin}.`
+      : 'Dead hand - the stock ran out.'
+  }
+  if (mode === 'solo' || game.toAct === seatToPlay) {
+    return `${game.phase} - seat ${seatToPlay} to act`
+  }
+  return `waiting - seat ${game.toAct ?? '?'} is thinking`
 }
 
 function App() {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
   const game = snapshot.game
+  // Solo hotseat follows the acting seat; at hand end the winner's view
+  // stays at the bottom (toAct is null then, and the dealer would be an
+  // arbitrary camera jump). Loopback perspectives are fixed per tab.
+  const soloFallback: Seat = game?.result?.type === 'gin' ? game.result.winner : (game?.dealer ?? 'a')
   const seatToPlay: Seat =
-    mode === 'solo'
-      ? (game?.toAct ?? game?.dealer ?? 'a')
-      : (snapshot.viewerSeat ?? 'a')
+    mode === 'solo' ? (game?.toAct ?? soloFallback) : (snapshot.viewerSeat ?? 'a')
   const legal = game ? legalActions(game, seatToPlay) : []
   const selected = snapshot.selectedCard
 
-  const ginKeys = new Set(
+  const ginKeys: ReadonlySet<string> = new Set(
     game && game.phase === 'discard' && game.toAct === seatToPlay
       ? ginDiscards(game.hands[seatToPlay]).map(cardKey)
       : [],
@@ -58,7 +91,9 @@ function App() {
     onStockClick: () => {
       if (legal.includes('drawStock')) submit({ type: 'drawStock', seat: seatToPlay })
     },
-    onDiscardClick: () => {
+    // An undeclared discard of a gin card is a legitimate plain discard:
+    // no explicit declaration, no gin (user ruling, per the rules).
+    onDiscardPileClick: () => {
       if (legal.includes('takeUpcard')) submit({ type: 'takeUpcard', seat: seatToPlay })
       else if (legal.includes('drawDiscard')) submit({ type: 'drawDiscard', seat: seatToPlay })
       else if (legal.includes('discard') && selected && !discardBlocked) submitDiscard(false)
@@ -66,21 +101,16 @@ function App() {
   }
 
   const seatLabel = mode === 'solo' ? 'hotseat' : `seat ${seatToPlay} (${mode})`
-  const status = !game
-    ? mode === 'joiner'
-      ? 'waiting for the creating tab (open ?seat=a)'
-      : 'no game'
-    : game.result
-      ? game.result.type === 'gin'
-        ? `Gin! Seat ${game.result.winner} wins by ${game.result.margin}.`
-        : 'Dead hand - the stock ran out.'
-      : game.toAct === seatToPlay || mode === 'solo'
-        ? `${game.phase} - seat ${seatToPlay} to act`
-        : `waiting - seat ${game.toAct ?? '?'} is thinking`
+  const status = statusFor(game, seatToPlay)
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <TableCanvas snapshot={snapshot} perspective={seatToPlay} handlers={handlers} />
+      <TableCanvas
+        snapshot={snapshot}
+        perspective={seatToPlay}
+        ginKeys={ginKeys}
+        handlers={handlers}
+      />
       <div style={overlayStyle}>
         <span>{`[${seatLabel}] ${status}`}</span>
         {legal.includes('startHand') && (

@@ -11,6 +11,9 @@ interface TableCanvasProps {
   // harness passes the acting seat; the loopback passes the tab's fixed
   // viewer seat.
   perspective: Seat
+  // Which cards go gin right now, computed once by the shell so the
+  // gold tint and the declare button can never disagree.
+  ginKeys: ReadonlySet<string>
   handlers: SceneHandlers
 }
 
@@ -18,10 +21,10 @@ interface TableCanvasProps {
 // Pixi v8's init() is async, so cleanup waits for its own init to settle
 // before destroying, and the canvas only attaches if this mount is still
 // live when init resolves. resizeTo makes Pixi the single resize owner.
-export function TableCanvas({ snapshot, perspective, handlers }: TableCanvasProps) {
+export function TableCanvas({ snapshot, perspective, ginKeys, handlers }: TableCanvasProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<TableScene | null>(null)
-  const latestRef = useRef({ snapshot, perspective })
+  const latestRef = useRef({ snapshot, perspective, ginKeys })
   const handlersRef = useRef(handlers)
 
   useEffect(() => {
@@ -29,9 +32,9 @@ export function TableCanvas({ snapshot, perspective, handlers }: TableCanvasProp
   }, [handlers])
 
   useEffect(() => {
-    latestRef.current = { snapshot, perspective }
-    sceneRef.current?.update(snapshot, perspective)
-  }, [snapshot, perspective])
+    latestRef.current = { snapshot, perspective, ginKeys }
+    sceneRef.current?.update(snapshot, perspective, ginKeys)
+  }, [snapshot, perspective, ginKeys])
 
   useEffect(() => {
     const host = hostRef.current
@@ -41,7 +44,7 @@ export function TableCanvas({ snapshot, perspective, handlers }: TableCanvasProp
     const forwarded: SceneHandlers = {
       onCardClick: (clicked) => handlersRef.current.onCardClick(clicked),
       onStockClick: () => handlersRef.current.onStockClick(),
-      onDiscardClick: () => handlersRef.current.onDiscardClick(),
+      onDiscardPileClick: () => handlersRef.current.onDiscardPileClick(),
     }
     const ready = app
       .init({ resizeTo: host, background: '#1d5c2e', antialias: true })
@@ -54,12 +57,17 @@ export function TableCanvas({ snapshot, perspective, handlers }: TableCanvasProp
           return
         }
         sceneRef.current = scene
-        scene.update(latestRef.current.snapshot, latestRef.current.perspective)
+        const latest = latestRef.current
+        scene.update(latest.snapshot, latest.perspective, latest.ginKeys)
       })
     return () => {
       live = false
+      const scene = sceneRef.current
       sceneRef.current = null
-      void ready.then(() => app.destroy(true, { children: true }))
+      void ready.then(() => {
+        scene?.destroy()
+        app.destroy(true, { children: true })
+      })
     }
   }, [])
 

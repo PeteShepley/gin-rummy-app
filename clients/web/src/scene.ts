@@ -3,7 +3,7 @@ import type { Application, Texture } from 'pixi.js'
 import { cardAssetUrl } from './cardAssets.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
 import { newDeck } from './engine/deck.ts'
-import { ginDiscards } from './engine/melds.ts'
+import { bestArrangement, ginDiscards } from './engine/melds.ts'
 import { otherSeat } from './engine/game.ts'
 import type { Seat } from './engine/game.ts'
 import type { Card } from './engine/cards.ts'
@@ -13,6 +13,9 @@ const CARD_W = 90
 const CARD_H = 126
 const EDGE = 16
 const RAISE = 18
+const GROUP_GAP = 22
+const DEADWOOD_TINT = 0xbdbdbd
+const GIN_TINT = 0xffd54a
 
 // The canvas mount captures this module in a closure; a hot update would
 // leave that stale closure rendering old code. Force a full reload.
@@ -89,6 +92,23 @@ export async function createTableScene(
         ? new Set(ginDiscards(game.hands[perspective]).map(cardKey))
         : new Set<string>()
 
+    // The lay-down: a finished hand is proof, so both hands show face up,
+    // clustered by their best arrangement, deadwood greyed.
+    const reveal = (hand: readonly Card[], y: number) => {
+      const arrangement = bestArrangement(hand)
+      const deadwoodKeys = new Set(arrangement.deadwood.map(cardKey))
+      for (const placed of groupedXs([...arrangement.melds, arrangement.deadwood], width)) {
+        const sprite = card(face(placed.held), placed.x, y)
+        if (deadwoodKeys.has(cardKey(placed.held))) sprite.tint = DEADWOOD_TINT
+      }
+    }
+
+    if (game.phase === 'handOver') {
+      reveal(game.hands[otherSeat(perspective)], EDGE + CARD_H / 2)
+      reveal(game.hands[perspective], height - EDGE - CARD_H / 2)
+      return
+    }
+
     rowXs(game.hands[otherSeat(perspective)].length, width).forEach((x) => {
       card(back, x, EDGE + CARD_H / 2)
     })
@@ -119,13 +139,19 @@ export async function createTableScene(
     }
 
     const hand = game.hands[perspective]
-    rowXs(hand.length, width).forEach((x, index) => {
-      const held = hand[index]
+    const handGroups = snapshot.autoGroup
+      ? (() => {
+          const arrangement = bestArrangement(hand)
+          return [...arrangement.melds, arrangement.deadwood]
+        })()
+      : [hand]
+    for (const placed of groupedXs(handGroups, width)) {
+      const held = placed.held
       const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? RAISE : 0
-      const sprite = card(face(held), x, height - EDGE - CARD_H / 2 - raised)
-      if (ginKeys.has(cardKey(held))) sprite.tint = 0xffd54a
+      const sprite = card(face(held), placed.x, height - EDGE - CARD_H / 2 - raised)
+      if (ginKeys.has(cardKey(held))) sprite.tint = GIN_TINT
       clickable(sprite, () => handlers.onCardClick(held))
-    })
+    }
   }
 
   const onResize = () => layout()
@@ -148,6 +174,32 @@ function rowXs(count: number, width: number): number[] {
   const spacing = Math.min(CARD_W + 10, (width - CARD_W - EDGE * 2) / Math.max(count - 1, 1))
   const start = width / 2 - (spacing * (count - 1)) / 2
   return Array.from({ length: count }, (_, i) => start + i * spacing)
+}
+
+// Lays out a row of card groups with a visible gap at group boundaries.
+function groupedXs(
+  groups: readonly (readonly Card[])[],
+  width: number,
+): { held: Card; x: number }[] {
+  const flat: { held: Card; group: number }[] = []
+  groups.forEach((group, index) => {
+    for (const held of group) flat.push({ held, group: index })
+  })
+  if (flat.length === 0) return []
+  const boundaries = groups.filter((group) => group.length > 0).length - 1
+  const gaps = Math.max(boundaries, 0) * GROUP_GAP
+  const spacing = Math.min(
+    CARD_W + 10,
+    (width - CARD_W - EDGE * 2 - gaps) / Math.max(flat.length - 1, 1),
+  )
+  let x = width / 2 - (spacing * (flat.length - 1) + gaps) / 2
+  return flat.map((entry, index) => {
+    if (index > 0) {
+      x += spacing
+      if (entry.group !== flat[index - 1].group) x += GROUP_GAP
+    }
+    return { held: entry.held, x }
+  })
 }
 
 // The Knoll set has no back; a drawn one stands in.

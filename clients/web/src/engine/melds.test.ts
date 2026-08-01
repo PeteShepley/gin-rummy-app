@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import fc from 'fast-check'
-import { ginDiscards, minDeadwood } from './melds.ts'
-import { RANKS, cardValue } from './cards.ts'
+import { bestArrangement, ginDiscards, minDeadwood } from './melds.ts'
+import { RANKS, cardKey, cardValue } from './cards.ts'
 import { newDeck } from './deck.ts'
 import { cards, sortedKeys } from './testCards.ts'
 import type { Card } from './cards.ts'
@@ -164,6 +164,78 @@ test('a hand with no gin offers no discards', () => {
     '6:spades', '8:hearts', '10:diamonds', 'J:hearts', '7:spades',
   )
   expect(ginDiscards(hand)).toEqual([])
+})
+
+function grouping(arrangement: { melds: readonly (readonly Card[])[] }): string[] {
+  return arrangement.melds.map((meld) => sortedKeys(meld).join(' ')).sort()
+}
+
+test('a fully melded hand arranges into legal melds with no deadwood', () => {
+  const hand = cards(
+    'K:clubs', 'A:clubs', '2:clubs', '3:clubs', '5:diamonds',
+    '5:hearts', '5:spades', '9:clubs', '9:diamonds', '9:hearts',
+  )
+  const arrangement = bestArrangement(hand)
+  expect(grouping(arrangement)).toEqual(
+    ['2:clubs 3:clubs A:clubs K:clubs', '5:diamonds 5:hearts 5:spades', '9:clubs 9:diamonds 9:hearts'].sort(),
+  )
+  expect(arrangement.deadwood).toEqual([])
+})
+
+test('the unique single-meld hand puts everything else in deadwood', () => {
+  const hand = cards(
+    '7:clubs', '7:diamonds', '7:hearts', 'K:spades', 'Q:diamonds',
+    'A:clubs', '2:clubs', '9:diamonds', '4:hearts', '5:spades',
+  )
+  const arrangement = bestArrangement(hand)
+  expect(grouping(arrangement)).toEqual(['7:clubs 7:diamonds 7:hearts'])
+  expect(sortedKeys(arrangement.deadwood)).toEqual(
+    sortedKeys(cards('K:spades', 'Q:diamonds', 'A:clubs', '2:clubs', '9:diamonds', '4:hearts', '5:spades')),
+  )
+})
+
+test('bestArrangement is deterministic for a given hand', () => {
+  const hand = cards(
+    '5:clubs', '6:clubs', '7:clubs', '7:diamonds', '7:hearts',
+    '7:spades', '8:clubs', '9:clubs', '10:clubs', 'J:clubs',
+  )
+  expect(bestArrangement(hand)).toEqual(bestArrangement(hand))
+  expect(bestArrangement(hand).deadwood).toEqual([])
+})
+
+test('meld cards come back in reading order: runs along their arc, sets by suit', () => {
+  const hand = cards(
+    '8:clubs', '6:clubs', '7:clubs',
+    'A:spades', 'K:spades', 'Q:spades',
+    '9:hearts', '9:diamonds', '9:spades',
+    '4:hearts',
+  )
+  const orders = bestArrangement(hand).melds.map((meld) => meld.map(cardKey))
+  expect(orders).toContainEqual(['6:clubs', '7:clubs', '8:clubs'])
+  expect(orders).toContainEqual(['Q:spades', 'K:spades', 'A:spades'])
+  expect(orders).toContainEqual(['9:diamonds', '9:hearts', '9:spades'])
+
+  const wrapHand = cards(
+    'K:diamonds', 'A:diamonds', '2:diamonds', '6:hearts', '6:clubs',
+    '6:spades', '9:hearts', '9:clubs', '9:spades', '4:clubs',
+  )
+  expect(bestArrangement(wrapHand).melds.map((meld) => meld.map(cardKey))).toContainEqual([
+    'K:diamonds', 'A:diamonds', '2:diamonds',
+  ])
+})
+
+test('bestArrangement partitions the hand and matches minDeadwood on random hands', () => {
+  fc.assert(
+    fc.property(fc.shuffledSubarray(newDeck(), { minLength: 10, maxLength: 10 }), (hand) => {
+      const { melds, deadwood } = bestArrangement(hand)
+      for (const meld of melds) {
+        expect(oracleIsMeld(meld)).toBe(true)
+      }
+      expect(sortedKeys([...melds.flat(), ...deadwood])).toEqual(sortedKeys(hand))
+      const deadwoodValue = deadwood.reduce((sum, held) => sum + cardValue(held.rank), 0)
+      expect(deadwoodValue).toBe(minDeadwood(hand))
+    }),
+  )
 })
 
 test('minDeadwood matches the brute-force oracle on random 10-card hands', () => {

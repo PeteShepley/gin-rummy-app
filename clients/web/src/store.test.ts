@@ -76,6 +76,21 @@ test('a stamped action arriving before the start contract fails loudly', () => {
   expect(() => store.apply({ type: 'startHand' })).toThrow('before the start contract')
 })
 
+test('auto-group is a persistent preference: toggles, notifies, survives actions', () => {
+  const store = createGameStore()
+  expect(store.getSnapshot().autoGroup).toBe(false)
+  const listener = vi.fn()
+  store.subscribe(listener)
+  store.toggleAutoGroup()
+  expect(listener).toHaveBeenCalledTimes(1)
+  expect(store.getSnapshot().autoGroup).toBe(true)
+  store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
+  store.apply({ type: 'startHand' })
+  expect(store.getSnapshot().autoGroup).toBe(true)
+  store.toggleAutoGroup()
+  expect(store.getSnapshot().autoGroup).toBe(false)
+})
+
 test('unsubscribing stops notifications', () => {
   const store = createGameStore()
   const listener = vi.fn()

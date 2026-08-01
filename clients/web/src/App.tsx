@@ -65,6 +65,11 @@ function App() {
             Deal
           </button>
         )}
+        {game && game.phase !== 'handOver' && (
+          <button type="button" onClick={() => store.toggleAutoGroup()}>
+            {snapshot.autoGroup ? 'grouping: on' : 'grouping: off'}
+          </button>
+        )}
         {legal.includes('takeUpcard') && (
           <button type="button" onClick={() => store.apply({ type: 'takeUpcard', seat: acting })}>
             Take upcard

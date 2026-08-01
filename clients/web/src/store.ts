@@ -6,6 +6,7 @@ export interface GameSnapshot {
   readonly game: EngineState | null
   readonly viewerSeat: Seat | null
   readonly selectedCard: Card | null
+  readonly autoGroup: boolean
 }
 
 export interface GameStore {
@@ -14,10 +15,16 @@ export interface GameStore {
   start(contract: { seed: number; dealer: Seat; viewerSeat: Seat }): void
   apply(action: Action): void
   selectCard(card: Card | null): void
+  toggleAutoGroup(): void
 }
 
 export function createGameStore(): GameStore {
-  let snapshot: GameSnapshot = { game: null, viewerSeat: null, selectedCard: null }
+  let snapshot: GameSnapshot = {
+    game: null,
+    viewerSeat: null,
+    selectedCard: null,
+    autoGroup: false,
+  }
   const listeners = new Set<() => void>()
 
   const replace = (next: GameSnapshot) => {
@@ -49,6 +56,9 @@ export function createGameStore(): GameStore {
     },
     selectCard(card) {
       replace({ ...snapshot, selectedCard: card })
+    },
+    toggleAutoGroup() {
+      replace({ ...snapshot, autoGroup: !snapshot.autoGroup })
     },
   }
 }

@@ -24,6 +24,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test web client
+        run: npm run test --workspace=web
+
       - name: Build web client
         run: npm run build --workspace=web
 

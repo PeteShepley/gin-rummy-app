@@ -1,7 +1,6 @@
 import { expect, test } from 'vitest'
 import { newDeck, shuffle } from './deck.ts'
-import { RANKS, SUITS } from './cards.ts'
-import { cardKey } from './testCards.ts'
+import { RANKS, SUITS, cardKey } from './cards.ts'
 
 // Golden fixture computed with the canonical mulberry32 reference and a
 // textbook Fisher-Yates (j = value % (i + 1), i from 51 down to 1) over

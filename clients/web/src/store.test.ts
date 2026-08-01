@@ -76,6 +76,27 @@ test('a stamped action arriving before the start contract fails loudly', () => {
   expect(() => store.apply({ type: 'startHand' })).toThrow('before the start contract')
 })
 
+test('the just-drawn card is remembered until the turn ends', () => {
+  const store = createGameStore()
+  store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
+  store.apply({ type: 'startHand' })
+  expect(store.getSnapshot().lastDrawn).toBeNull()
+  store.apply({ type: 'passUpcard', seat: 'b' })
+  store.apply({ type: 'passUpcard', seat: 'a' })
+  store.apply({ type: 'drawStock', seat: 'b' })
+  expect(store.getSnapshot().lastDrawn).toEqual(cards('8:diamonds')[0])
+  store.apply({ type: 'discard', seat: 'b', card: cards('4:diamonds')[0], declareGin: false })
+  expect(store.getSnapshot().lastDrawn).toBeNull()
+})
+
+test('taking the upcard also marks the drawn card', () => {
+  const store = createGameStore()
+  store.start({ seed: 42, dealer: 'a', viewerSeat: 'b' })
+  store.apply({ type: 'startHand' })
+  store.apply({ type: 'takeUpcard', seat: 'b' })
+  expect(store.getSnapshot().lastDrawn).toEqual(cards('7:clubs')[0])
+})
+
 test('auto-group is a persistent preference: toggles, notifies, survives actions', () => {
   const store = createGameStore()
   expect(store.getSnapshot().autoGroup).toBe(false)

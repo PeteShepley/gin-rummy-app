@@ -224,6 +224,16 @@ test('meld cards come back in reading order: runs along their arc, sets by suit'
   ])
 })
 
+test('deadwood comes back in rank order, suits mixed, suit breaking ties', () => {
+  const hand = cards(
+    '7:clubs', '7:diamonds', '7:hearts', 'K:spades', 'K:hearts',
+    '9:diamonds', '4:hearts', 'A:clubs', '2:clubs', '5:spades',
+  )
+  expect(bestArrangement(hand).deadwood.map(cardKey)).toEqual([
+    'A:clubs', '2:clubs', '4:hearts', '5:spades', '9:diamonds', 'K:hearts', 'K:spades',
+  ])
+})
+
 test('bestArrangement partitions the hand and matches minDeadwood on random hands', () => {
   fc.assert(
     fc.property(fc.shuffledSubarray(newDeck(), { minLength: 10, maxLength: 10 }), (hand) => {

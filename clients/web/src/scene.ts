@@ -148,7 +148,14 @@ export async function createTableScene(
     for (const placed of groupedXs(handGroups, width)) {
       const held = placed.held
       const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? RAISE : 0
-      const sprite = card(face(held), placed.x, height - EDGE - CARD_H / 2 - raised)
+      const y = height - EDGE - CARD_H / 2 - raised
+      if (snapshot.lastDrawn && sameCard(held, snapshot.lastDrawn)) {
+        const halo = new Graphics()
+          .roundRect(placed.x - (CARD_W + 10) / 2, y - (CARD_H + 10) / 2, CARD_W + 10, CARD_H + 10, 10)
+          .stroke({ width: 3, color: 0x7fd1ff })
+        root.addChild(halo)
+      }
+      const sprite = card(face(held), placed.x, y)
       if (ginKeys.has(cardKey(held))) sprite.tint = GIN_TINT
       clickable(sprite, () => handlers.onCardClick(held))
     }

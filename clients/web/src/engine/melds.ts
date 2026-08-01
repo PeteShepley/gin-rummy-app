@@ -107,7 +107,12 @@ export function bestArrangement(hand: readonly Card[]): Arrangement {
   const melded = bestMasks.reduce((all, mask) => all | mask, 0)
   return {
     melds: bestMasks.map((mask) => orderMeld(hand.filter((_, index) => mask & (1 << index)))),
-    deadwood: hand.filter((_, index) => !(melded & (1 << index))),
+    deadwood: hand
+      .filter((_, index) => !(melded & (1 << index)))
+      .sort(
+        (a, b) =>
+          rankIndex(a.rank) - rankIndex(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit),
+      ),
   }
 }
 

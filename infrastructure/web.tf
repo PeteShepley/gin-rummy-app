@@ -3,7 +3,7 @@
 # relative path since this repo and terraform-aws-static-app are checked
 # out as sibling directories on this developer's machine.
 module "web" {
-  source = "../../terraform-aws-static-app"
+  source = "github.com/PeteShepley/terraform-aws-static-app"
 
   app_name             = "gin-rummy-app"
   site_bucket_name     = var.site_bucket_name

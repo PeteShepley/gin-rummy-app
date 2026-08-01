@@ -3,14 +3,8 @@ import fc from 'fast-check'
 import { ginDiscards, isRun, isSet, minDeadwood } from './melds.ts'
 import { RANKS, cardValue } from './cards.ts'
 import { newDeck } from './deck.ts'
-import type { Card, Rank, Suit } from './cards.ts'
-
-function cards(...specs: string[]): Card[] {
-  return specs.map((spec) => {
-    const [rank, suit] = spec.split(':')
-    return { rank: rank as Rank, suit: suit as Suit }
-  })
-}
+import { cards, sortedKeys } from './testCards.ts'
+import type { Card } from './cards.ts'
 
 // Independent oracle for the property tests below. It re-implements meld
 // legality (rotate-and-check, not the engine's gap-count) and finds the
@@ -132,10 +126,6 @@ test('a gin that requires a wrap run is found', () => {
   )
   expect(minDeadwood(hand)).toBe(0)
 })
-
-function sortedKeys(found: readonly Card[]): string[] {
-  return found.map((card) => `${card.rank}:${card.suit}`).sort()
-}
 
 test('ginDiscards names the one discard that leaves gin', () => {
   const hand = cards(

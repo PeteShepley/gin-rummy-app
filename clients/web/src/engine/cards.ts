@@ -11,6 +11,10 @@ export interface Card {
   readonly suit: Suit
 }
 
+export function sameCard(a: Card, b: Card): boolean {
+  return a.rank === b.rank && a.suit === b.suit
+}
+
 export function cardValue(rank: Rank): number {
   if (rank === 'A') return 1
   if (rank === 'J' || rank === 'Q' || rank === 'K') return 10

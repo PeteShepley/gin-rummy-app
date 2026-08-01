@@ -186,6 +186,37 @@ against them:
    the echoes of their own — deduplicate by sequence number, and request
    resync on a gap.
 
+### Message schema (locked for phase 2 — the loopback speaks it verbatim)
+
+Five message kinds travel between a client and the sequencer (the relay
+in production; in dev mode, a shim inside the room-creating tab):
+
+- `start` — the hand contract, sent once when the second seat joins:
+  the seed, who deals hand 1, and the seat each player holds. Applying
+  `start` creates a fresh engine at that seed; every deal, including
+  hand 1's, is then a sequenced `startHand` action, so (seed, action
+  log) alone replays everything.
+- `submit` — a client proposes an engine action, unstamped. Submitting
+  changes nothing locally: clients never apply their own actions
+  directly.
+- `action` — the sequencer's stamped fan-out: a sequence number plus
+  the action, sent to both seats (the submitter receives its own echo).
+  Clients apply stamped actions in sequence order, deduplicate by
+  number, and request resync on a gap. Actions the engine rejects are
+  still stamped and fanned out — both engines reject them identically,
+  so they are deterministic no-ops and the sequencer never needs to
+  understand the rules. This also makes duplicate submits harmless
+  (a second startHand simply rejects as wrongPhase on both sides).
+- `resyncRequest` — a client asks for a full bootstrap.
+- `resync` — the contract plus the complete stamped log; the receiving
+  client discards local state entirely and rebuilds from scratch.
+
+Dev mode wires this schema over a BroadcastChannel: the creating tab
+runs the sequencer shim (stamping its own submits through the same code
+path as the peer's), picks the seed, takes seat "a", and deals hand 1
+per the dealer-is-creator rule. The relay phase replaces the shim and
+the channel; no message changes shape.
+
 The rest is a sketch, expected to be refined by what the loopback dev mode
 teaches us:
 

@@ -4,7 +4,8 @@
 lenses + a qwen breadth pass, per the practice from the platformer-rust
 project). The review's confirmed findings and the decisions locked during it
 are folded in below; this supersedes the first draft. Build can follow this
-doc.
+doc. Updated 2026-08-01: aces wrap (round-the-corner), adopted from the PR #1
+review.
 
 ## What the review changed (summary)
 
@@ -68,7 +69,8 @@ card game first and the networking later.
 
 ## The rules we implement (straight gin)
 
-- Standard 52-card deck, aces low: A-2-3 is a legal run, Q-K-A is not. Ace
+- Standard 52-card deck, aces wrap (round-the-corner): runs are contiguous
+  on the 13-rank cycle, so A-2-3, Q-K-A, and K-A-2 are all legal. Ace
   counts 1, face cards count 10.
 - The dealer of hand 1 is the room's creator (in dev mode, the tab that
   creates the local room). A dead hand is redealt by the same dealer.
@@ -121,9 +123,10 @@ card game first and the networking later.
   including redeals. Engine-wide ban: no `Math.random`, no `Date`, no
   locale-dependent APIs, no comparator-shuffle.
 - **Minimum-deadwood search, specified.** Generate every candidate meld —
-  all 3- and 4-card subsets of each rank, every contiguous same-suit sub-run
-  of length ≥ 3 — then backtrack over disjoint combinations for minimum
-  deadwood. Maximal-meld enumeration is wrong: some gins exist only by
+  all 3- and 4-card subsets of each rank, every same-suit sub-run of
+  length ≥ 3 that is contiguous on the 13-rank cycle (wrap-around windows
+  included, up to all 13) — then backtrack over disjoint combinations for
+  minimum deadwood. Maximal-meld enumeration is wrong: some gins exist only by
   splitting a four-of-a-kind or a long run, and those cases are mandated
   tests.
 - **Testing.** Test-driven: write the test that proves a rule first, then the
@@ -135,8 +138,10 @@ card game first and the networking later.
     resync payload.
   - Meld search: a deliberately naive brute-force partition enumerator as an
     independent oracle, property-tested against the real search over
-    randomized hands (fast-check, MIT). Plus the split-a-set and
-    split-a-run gin cases, A-2-3 legal, Q-K-A illegal.
+    randomized hands (fast-check, MIT); the oracle implements cyclic run
+    legality independently, never by importing the engine's helper. Plus
+    the split-a-set and split-a-run gin cases; A-2-3, Q-K-A, and K-A-2
+    legal (wrap); Q-A-2 illegal (not contiguous on the cycle).
   - Every illegal transition in the phase diagram gets a rejection test.
 
 ## Client design

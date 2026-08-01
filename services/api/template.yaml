@@ -1,0 +1,26 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Local-only SAM template for the Gin Rummy API. This mirrors the production
+  HTTP API shape (Lambda + API Gateway) so `sam local start-api` behaves like
+  the real deployment, but this template is never deployed anywhere itself —
+  Terraform (see ../../infrastructure) owns all real infrastructure.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 10
+    MemorySize: 256
+
+Resources:
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.handler
+      CodeUri: dist/
+      Events:
+        Proxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY

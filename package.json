@@ -1,0 +1,21 @@
+{
+  "name": "gin-rummy-app",
+  "version": "1.0.0",
+  "description": "",
+  "workspaces": ["services/*", "clients/*"],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeteShepley/gin-rummy-app.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/PeteShepley/gin-rummy-app/issues"
+  },
+  "homepage": "https://github.com/PeteShepley/gin-rummy-app#readme"
+}

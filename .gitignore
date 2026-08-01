@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.serverless/
+.esbuild/
+.aws-sam/
+function.zip
+.terraform/
+*.tfstate*
+*.log
+.DS_Store

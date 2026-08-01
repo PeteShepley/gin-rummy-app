@@ -17,12 +17,12 @@ export type Phase =
 export type HandResult = { type: 'gin'; winner: Seat; margin: number } | { type: 'dead' }
 
 export interface EngineState {
-  readonly prng: number
+  readonly prngState: number
   readonly dealer: Seat
   readonly phase: Phase
   readonly hands: Readonly<Record<Seat, readonly Card[]>>
   readonly stock: readonly Card[]
-  readonly discard: readonly Card[]
+  readonly discardPile: readonly Card[]
   readonly toAct: Seat | null
   readonly takenFromDiscard: Card | null
   readonly result: HandResult | null
@@ -42,6 +42,8 @@ export type RejectReason =
   | 'cardNotInHand'
   | 'cannotDiscardTakenCard'
   | 'notGin'
+  | 'stockEmpty'
+  | 'discardEmpty'
 
 export type AdvanceResult = { ok: true; state: EngineState } | { ok: false; reason: RejectReason }
 
@@ -51,12 +53,12 @@ export function otherSeat(seat: Seat): Seat {
 
 export function initialState(seed: number, dealer: Seat): EngineState {
   return {
-    prng: seed,
+    prngState: seed,
     dealer,
     phase: 'awaitingStart',
     hands: { a: [], b: [] },
     stock: [],
-    discard: [],
+    discardPile: [],
     toAct: null,
     takenFromDiscard: null,
     result: null,
@@ -80,8 +82,10 @@ export function advance(state: EngineState, action: Action): AdvanceResult {
   }
 }
 
-// What the given seat may legally do right now. Drives all UI
-// affordances; the reducer's own guards remain the authority.
+// What the given seat may legally do right now, at action-type
+// granularity; card-level affordances (the no-return card, gin discards)
+// come from state and the melds queries. The reducer's own guards remain
+// the authority.
 export function legalActions(state: EngineState, seat: Seat): Action['type'][] {
   switch (state.phase) {
     case 'awaitingStart':
@@ -114,14 +118,15 @@ function actionRejection(
 function takeUpcard(state: EngineState, seat: Seat): AdvanceResult {
   const rejection = actionRejection(state, seat, ['upcardOfferNonDealer', 'upcardOfferDealer'])
   if (rejection) return { ok: false, reason: rejection }
-  const upcard = state.discard[state.discard.length - 1]
+  if (state.discardPile.length === 0) return { ok: false, reason: 'discardEmpty' }
+  const upcard = state.discardPile[state.discardPile.length - 1]
   return {
     ok: true,
     state: {
       ...state,
       phase: 'discard',
       hands: { ...state.hands, [seat]: [...state.hands[seat], upcard] },
-      discard: state.discard.slice(0, -1),
+      discardPile: state.discardPile.slice(0, -1),
       toAct: seat,
       takenFromDiscard: upcard,
     },
@@ -146,6 +151,7 @@ function passUpcard(state: EngineState, seat: Seat): AdvanceResult {
 function drawStock(state: EngineState, seat: Seat): AdvanceResult {
   const rejection = actionRejection(state, seat, ['forcedStockDraw', 'draw'])
   if (rejection) return { ok: false, reason: rejection }
+  if (state.stock.length === 0) return { ok: false, reason: 'stockEmpty' }
   return {
     ok: true,
     state: {
@@ -161,14 +167,15 @@ function drawStock(state: EngineState, seat: Seat): AdvanceResult {
 function drawDiscard(state: EngineState, seat: Seat): AdvanceResult {
   const rejection = actionRejection(state, seat, ['draw'])
   if (rejection) return { ok: false, reason: rejection }
-  const top = state.discard[state.discard.length - 1]
+  if (state.discardPile.length === 0) return { ok: false, reason: 'discardEmpty' }
+  const top = state.discardPile[state.discardPile.length - 1]
   return {
     ok: true,
     state: {
       ...state,
       phase: 'discard',
       hands: { ...state.hands, [seat]: [...state.hands[seat], top] },
-      discard: state.discard.slice(0, -1),
+      discardPile: state.discardPile.slice(0, -1),
       takenFromDiscard: top,
     },
   }
@@ -187,7 +194,7 @@ function discard(state: EngineState, seat: Seat, card: Card, declareGin: boolean
   const afterDiscard = {
     ...state,
     hands: { ...state.hands, [seat]: remaining },
-    discard: [...state.discard, hand[held]],
+    discardPile: [...state.discardPile, hand[held]],
     takenFromDiscard: null,
   }
   if (declareGin) {
@@ -198,7 +205,11 @@ function discard(state: EngineState, seat: Seat, card: Card, declareGin: boolean
         ...afterDiscard,
         phase: 'handOver',
         toAct: null,
-        result: { type: 'gin', winner: seat, margin: minDeadwood(state.hands[otherSeat(seat)]) },
+        result: {
+          type: 'gin',
+          winner: seat,
+          margin: minDeadwood(afterDiscard.hands[otherSeat(seat)]),
+        },
       },
     }
   }
@@ -223,7 +234,7 @@ function startHand(state: EngineState): AdvanceResult {
   if (state.phase !== 'awaitingStart' && state.phase !== 'handOver') {
     return { ok: false, reason: 'wrongPhase' }
   }
-  const shuffled = shuffle(newDeck(), state.prng)
+  const shuffled = shuffle(newDeck(), state.prngState)
   const nonDealer = otherSeat(state.dealer)
   const hands: Record<Seat, Card[]> = { a: [], b: [] }
   for (let i = 0; i < 20; i++) {
@@ -233,11 +244,11 @@ function startHand(state: EngineState): AdvanceResult {
     ok: true,
     state: {
       ...state,
-      prng: shuffled.state,
+      prngState: shuffled.state,
       phase: 'upcardOfferNonDealer',
       hands,
       stock: shuffled.cards.slice(21),
-      discard: [shuffled.cards[20]],
+      discardPile: [shuffled.cards[20]],
       toAct: nonDealer,
       takenFromDiscard: null,
       result: null,

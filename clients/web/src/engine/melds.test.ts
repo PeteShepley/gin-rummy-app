@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest'
 import fc from 'fast-check'
-import { ginDiscards, isRun, isSet, minDeadwood } from './melds.ts'
+import { ginDiscards, minDeadwood } from './melds.ts'
 import { RANKS, cardValue } from './cards.ts'
 import { newDeck } from './deck.ts'
 import { cards, sortedKeys } from './testCards.ts'
@@ -51,40 +51,39 @@ function oracleMinDeadwood(hand: readonly Card[]): number {
   return best
 }
 
-test('three or more consecutive cards of one suit form a run', () => {
-  expect(isRun(cards('A:clubs', '2:clubs', '3:clubs'))).toBe(true)
-  expect(isRun(cards('4:hearts', '5:hearts', '6:hearts', '7:hearts'))).toBe(true)
+// Run-legality spec, asserted through the search that actually plays the
+// game: a hand of two clean sets plus the probed trio melds fully exactly
+// when the trio is a legal run, leaving only the named junk card.
+test('an ace-low run melds: A-2-3 plus two sets leaves only the junk', () => {
+  const hand = cards(
+    'A:clubs', '2:clubs', '3:clubs', '6:diamonds', '6:hearts',
+    '6:clubs', '9:diamonds', '9:hearts', '9:clubs', 'K:spades',
+  )
+  expect(minDeadwood(hand)).toBe(10)
 })
 
-test('runs wrap round the corner', () => {
-  expect(isRun(cards('Q:spades', 'K:spades', 'A:spades'))).toBe(true)
-  expect(isRun(cards('K:diamonds', 'A:diamonds', '2:diamonds'))).toBe(true)
-  expect(isRun(cards('J:clubs', 'Q:clubs', 'K:clubs', 'A:clubs', '2:clubs'))).toBe(true)
+test('an ace-high run melds: Q-K-A plus two sets leaves only the junk', () => {
+  const hand = cards(
+    'Q:spades', 'K:spades', 'A:spades', '6:diamonds', '6:hearts',
+    '6:clubs', '9:diamonds', '9:hearts', '9:clubs', '4:hearts',
+  )
+  expect(minDeadwood(hand)).toBe(4)
 })
 
-test('non-contiguous ranks are not a run, even near the corner', () => {
-  expect(isRun(cards('Q:spades', 'A:spades', '2:spades'))).toBe(false)
-  expect(isRun(cards('3:clubs', '4:clubs', '6:clubs'))).toBe(false)
+test('a wrap run melds: K-A-2 plus two sets leaves only the junk', () => {
+  const hand = cards(
+    'K:diamonds', 'A:diamonds', '2:diamonds', '6:hearts', '6:clubs',
+    '6:spades', '9:hearts', '9:clubs', '9:spades', '5:clubs',
+  )
+  expect(minDeadwood(hand)).toBe(5)
 })
 
-test('a run needs one suit and at least three cards', () => {
-  expect(isRun(cards('4:hearts', '5:spades', '6:hearts'))).toBe(false)
-  expect(isRun(cards('4:hearts', '5:hearts'))).toBe(false)
-})
-
-test('run recognition ignores the order the cards are held in', () => {
-  expect(isRun(cards('3:clubs', 'A:clubs', '2:clubs'))).toBe(true)
-  expect(isRun(cards('A:spades', 'Q:spades', 'K:spades'))).toBe(true)
-})
-
-test('three or four cards of one rank form a set', () => {
-  expect(isSet(cards('7:clubs', '7:diamonds', '7:hearts'))).toBe(true)
-  expect(isSet(cards('Q:clubs', 'Q:diamonds', 'Q:hearts', 'Q:spades'))).toBe(true)
-})
-
-test('fewer than three cards or mixed ranks are not a set', () => {
-  expect(isSet(cards('7:clubs', '7:diamonds'))).toBe(false)
-  expect(isSet(cards('7:clubs', '7:diamonds', '8:hearts'))).toBe(false)
+test('Q-A-2 is not a run: it skips the king, so all three count as deadwood', () => {
+  const hand = cards(
+    'Q:spades', 'A:spades', '2:spades', '6:diamonds', '6:hearts',
+    '6:clubs', '9:diamonds', '9:hearts', '9:clubs', 'K:hearts',
+  )
+  expect(minDeadwood(hand)).toBe(23)
 })
 
 test('a hand with no melds is worth its full card total', () => {
@@ -169,7 +168,7 @@ test('a hand with no gin offers no discards', () => {
 
 test('minDeadwood matches the brute-force oracle on random 10-card hands', () => {
   fc.assert(
-    fc.property(fc.subarray(newDeck(), { minLength: 10, maxLength: 10 }), (hand) => {
+    fc.property(fc.shuffledSubarray(newDeck(), { minLength: 10, maxLength: 10 }), (hand) => {
       expect(minDeadwood(hand)).toBe(oracleMinDeadwood(hand))
     }),
   )

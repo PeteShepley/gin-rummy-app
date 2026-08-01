@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest'
 import { newDeck, shuffle } from './deck.ts'
 import { RANKS, SUITS } from './cards.ts'
+import { cardKey } from './testCards.ts'
 
 // Golden fixture computed with the canonical mulberry32 reference and a
 // textbook Fisher-Yates (j = value % (i + 1), i from 51 down to 1) over
@@ -23,7 +24,7 @@ const STATE_AFTER_SHUFFLE_42 = 3215543289
 test('a new deck holds all 52 rank-suit combinations exactly once', () => {
   const deck = newDeck()
   expect(deck).toHaveLength(52)
-  const seen = new Set(deck.map((card) => `${card.rank}:${card.suit}`))
+  const seen = new Set(deck.map(cardKey))
   expect(seen.size).toBe(52)
   for (const suit of SUITS) {
     for (const rank of RANKS) {
@@ -34,13 +35,13 @@ test('a new deck holds all 52 rank-suit combinations exactly once', () => {
 
 test('shuffling a new deck with seed 42 gives the reference Fisher-Yates order', () => {
   const result = shuffle(newDeck(), 42)
-  expect(result.cards.map((card) => `${card.rank}:${card.suit}`)).toEqual(SHUFFLED_SEED_42)
+  expect(result.cards.map(cardKey)).toEqual(SHUFFLED_SEED_42)
   expect(result.state).toBe(STATE_AFTER_SHUFFLE_42)
 })
 
 test('shuffle does not mutate the deck it is given', () => {
   const deck = newDeck()
-  const before = deck.map((card) => `${card.rank}:${card.suit}`)
+  const before = deck.map(cardKey)
   shuffle(deck, 42)
-  expect(deck.map((card) => `${card.rank}:${card.suit}`)).toEqual(before)
+  expect(deck.map(cardKey)).toEqual(before)
 })

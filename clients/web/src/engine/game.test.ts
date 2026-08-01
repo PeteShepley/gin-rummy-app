@@ -2,7 +2,7 @@ import { expect, test } from 'vitest'
 import fc from 'fast-check'
 import { advance, initialState, legalActions } from './game.ts'
 import { cards, sortedKeys } from './testCards.ts'
-import type { Action, EngineState } from './game.ts'
+import type { Action, EngineState, Seat } from './game.ts'
 
 // Applies an action that is expected to be legal; throws on rejection so
 // test arrange steps fail loudly.
@@ -34,14 +34,14 @@ test('startHand deals the reference hands for seed 42', () => {
       ),
     ),
   )
-  expect(state.discard).toEqual(cards('7:clubs'))
+  expect(state.discardPile).toEqual(cards('7:clubs'))
   expect(state.stock).toHaveLength(31)
   expect(state.stock.slice(0, 3)).toEqual(cards('8:diamonds', '3:diamonds', 'A:spades'))
 })
 
 test('the deal leaves the PRNG state advanced, so a redeal continues the stream', () => {
   const state = apply(initialState(42, 'a'), { type: 'startHand' })
-  expect(state.prng).toBe(3215543289)
+  expect(state.prngState).toBe(3215543289)
 })
 
 test('after the deal the non-dealer is offered the upcard', () => {
@@ -64,7 +64,7 @@ test('taking the upcard is that player’s draw: they discard next', () => {
   const state = apply(dealtState(), { type: 'takeUpcard', seat: 'b' })
   expect(sortedKeys(state.hands.b)).toContain('7:clubs')
   expect(state.hands.b).toHaveLength(11)
-  expect(state.discard).toHaveLength(0)
+  expect(state.discardPile).toHaveLength(0)
   expect(state.phase).toBe('discard')
   expect(state.toAct).toBe('b')
   expect(state.takenFromDiscard).toEqual(cards('7:clubs')[0])
@@ -74,7 +74,7 @@ test('when the non-dealer passes, the dealer is offered the upcard', () => {
   const state = apply(dealtState(), { type: 'passUpcard', seat: 'b' })
   expect(state.phase).toBe('upcardOfferDealer')
   expect(state.toAct).toBe('a')
-  expect(state.discard).toEqual(cards('7:clubs'))
+  expect(state.discardPile).toEqual(cards('7:clubs'))
 })
 
 test('the dealer may take the passed upcard', () => {
@@ -92,7 +92,7 @@ test('when both pass, the non-dealer must draw from the stock', () => {
   const state = apply(afterPass, { type: 'passUpcard', seat: 'a' })
   expect(state.phase).toBe('forcedStockDraw')
   expect(state.toAct).toBe('b')
-  expect(state.discard).toEqual(cards('7:clubs'))
+  expect(state.discardPile).toEqual(cards('7:clubs'))
 })
 
 test('only the offered seat may act on the upcard', () => {
@@ -145,7 +145,7 @@ test('discarding ends the turn: the pile gains the card, the opponent draws next
   const state = secondTurnState()
   expect(state.hands.b).toHaveLength(10)
   expect(sortedKeys(state.hands.b)).not.toContain('4:diamonds')
-  expect(state.discard).toEqual(cards('7:clubs', '4:diamonds'))
+  expect(state.discardPile).toEqual(cards('7:clubs', '4:diamonds'))
   expect(state.phase).toBe('draw')
   expect(state.toAct).toBe('a')
   expect(state.takenFromDiscard).toBeNull()
@@ -165,7 +165,7 @@ test('a normal turn may draw the top of the discard pile', () => {
   const state = apply(secondTurnState(), { type: 'drawDiscard', seat: 'a' })
   expect(state.hands.a).toHaveLength(11)
   expect(sortedKeys(state.hands.a)).toContain('4:diamonds')
-  expect(state.discard).toEqual(cards('7:clubs'))
+  expect(state.discardPile).toEqual(cards('7:clubs'))
   expect(state.phase).toBe('discard')
   expect(state.takenFromDiscard).toEqual(cards('4:diamonds')[0])
 })
@@ -218,7 +218,7 @@ test('the taken card may be discarded on a later turn', () => {
     type: 'discard', seat: 'a', card: cards('4:diamonds')[0], declareGin: false,
   })
   expect(sortedKeys(state.hands.a)).not.toContain('4:diamonds')
-  expect(state.discard[state.discard.length - 1]).toEqual(cards('4:diamonds')[0])
+  expect(state.discardPile[state.discardPile.length - 1]).toEqual(cards('4:diamonds')[0])
 })
 
 test('a card drawn from the stock may be discarded immediately', () => {
@@ -226,7 +226,7 @@ test('a card drawn from the stock may be discarded immediately', () => {
   const state = apply(drawn, {
     type: 'discard', seat: 'a', card: cards('3:diamonds')[0], declareGin: false,
   })
-  expect(state.discard[state.discard.length - 1]).toEqual(cards('3:diamonds')[0])
+  expect(state.discardPile[state.discardPile.length - 1]).toEqual(cards('3:diamonds')[0])
 })
 
 test('a card you do not hold cannot be discarded', () => {
@@ -241,7 +241,7 @@ test('a card you do not hold cannot be discarded', () => {
 // pure deadwood.
 function ginReadyState(): EngineState {
   return {
-    prng: 123,
+    prngState: 123,
     dealer: 'a',
     phase: 'discard',
     hands: {
@@ -255,7 +255,7 @@ function ginReadyState(): EngineState {
       ),
     },
     stock: cards('6:hearts', '6:diamonds', '8:clubs'),
-    discard: cards('Q:spades'),
+    discardPile: cards('Q:spades'),
     toAct: 'b',
     takenFromDiscard: null,
     result: null,
@@ -269,7 +269,7 @@ test('a declared gin ends the hand with the loser’s deadwood as margin', () =>
   expect(state.phase).toBe('handOver')
   expect(state.result).toEqual({ type: 'gin', winner: 'b', margin: 68 })
   expect(state.hands.b).toHaveLength(10)
-  expect(state.discard[state.discard.length - 1]).toEqual(cards('K:spades')[0])
+  expect(state.discardPile[state.discardPile.length - 1]).toEqual(cards('K:spades')[0])
 })
 
 test('declaring gin on a discard that does not leave gin is rejected', () => {
@@ -348,7 +348,7 @@ test('a dead hand is redealt by the same dealer, continuing the PRNG stream', ()
   expect(redealt.hands.a).toHaveLength(10)
   expect(redealt.hands.b).toHaveLength(10)
   expect(redealt.stock).toHaveLength(31)
-  expect(redealt.prng).not.toBe(dead.prng)
+  expect(redealt.prngState).not.toBe(dead.prngState)
 })
 
 test('legalActions names what each seat may do in every phase', () => {
@@ -381,6 +381,70 @@ test('legalActions names what each seat may do in every phase', () => {
   })
   expect(legalActions(over, 'a')).toEqual(['startHand'])
   expect(legalActions(over, 'b')).toEqual(['startHand'])
+})
+
+// The reducer is the last line of defense against states rebuilt from a
+// buggy or version-skewed action log (phase-3 resync): sources that can
+// never be empty through legal play still get clean rejections.
+test('drawing from an empty stock is rejected', () => {
+  const state: EngineState = { ...ginReadyState(), phase: 'draw', toAct: 'b', stock: [] }
+  expect(advance(state, { type: 'drawStock', seat: 'b' })).toEqual({
+    ok: false,
+    reason: 'stockEmpty',
+  })
+})
+
+test('taking or drawing from an empty discard pile is rejected', () => {
+  const drawState: EngineState = { ...ginReadyState(), phase: 'draw', toAct: 'b', discardPile: [] }
+  expect(advance(drawState, { type: 'drawDiscard', seat: 'b' })).toEqual({
+    ok: false,
+    reason: 'discardEmpty',
+  })
+  const offerState: EngineState = {
+    ...ginReadyState(),
+    phase: 'upcardOfferNonDealer',
+    toAct: 'b',
+    discardPile: [],
+  }
+  expect(advance(offerState, { type: 'takeUpcard', seat: 'b' })).toEqual({
+    ok: false,
+    reason: 'discardEmpty',
+  })
+})
+
+test('legalActions agrees with what advance actually accepts, in every phase', () => {
+  const fixtures: EngineState[] = [
+    initialState(42, 'a'),
+    dealtState(),
+    apply(dealtState(), { type: 'passUpcard', seat: 'b' }),
+    forcedDrawState(),
+    secondTurnState(),
+    ginReadyState(),
+    apply(lastTurnState(), {
+      type: 'discard', seat: 'b', card: cards('9:spades')[0], declareGin: false,
+    }),
+  ]
+  for (const state of fixtures) {
+    for (const seat of ['a', 'b'] as Seat[]) {
+      const probes: Action[] = [
+        { type: 'startHand' },
+        { type: 'takeUpcard', seat },
+        { type: 'passUpcard', seat },
+        { type: 'drawStock', seat },
+        { type: 'drawDiscard', seat },
+        { type: 'discard', seat, card: state.hands[seat][0] ?? cards('A:clubs')[0], declareGin: false },
+      ]
+      const accepted = probes
+        .filter((action) => {
+          const result = advance(state, action)
+          return result.ok || (result.reason !== 'wrongPhase' && result.reason !== 'wrongSeat')
+        })
+        .map((action) => action.type)
+      expect(`${state.phase}/${seat}: ${accepted.join(',')}`).toBe(
+        `${state.phase}/${seat}: ${legalActions(state, seat).join(',')}`,
+      )
+    }
+  }
 })
 
 // The determinism invariant: client state is a pure function of

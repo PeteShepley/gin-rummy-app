@@ -7,33 +7,6 @@ function rankIndex(rank: Rank): number {
   return RANKS.indexOf(rank)
 }
 
-export function isSet(cards: readonly Card[]): boolean {
-  if (cards.length < 3 || cards.length > 4) return false
-  return cards.every((card) => card.rank === cards[0].rank)
-}
-
-// True when sorted rank indexes form a single contiguous arc on the
-// 13-rank cycle (aces wrap): every cyclic step between neighbours is 1,
-// except the one step that closes the circle.
-function isOneCyclicArc(sortedIndexes: readonly number[]): boolean {
-  let nonAdjacentSteps = 0
-  for (let i = 0; i < sortedIndexes.length; i++) {
-    const current = sortedIndexes[i]
-    const next = sortedIndexes[(i + 1) % sortedIndexes.length]
-    if ((next - current + RANK_COUNT) % RANK_COUNT !== 1) nonAdjacentSteps++
-  }
-  return nonAdjacentSteps <= 1
-}
-
-// A run is 3+ cards of one suit whose ranks are one cyclic arc.
-export function isRun(cards: readonly Card[]): boolean {
-  if (cards.length < 3 || cards.length > RANK_COUNT) return false
-  if (!cards.every((card) => card.suit === cards[0].suit)) return false
-  const indexes = [...new Set(cards.map((card) => rankIndex(card.rank)))].sort((a, b) => a - b)
-  if (indexes.length !== cards.length) return false
-  return isOneCyclicArc(indexes)
-}
-
 // Every candidate meld as a bitmask over hand indexes: all 3- and 4-card
 // subsets of each rank, and every cyclic-contiguous same-suit window of
 // length >= 3. Sub-melds are enumerated deliberately - some gins exist
@@ -107,6 +80,6 @@ export function minDeadwood(hand: readonly Card[]): number {
 // melded. Drives the UI's declare-gin offer.
 export function ginDiscards(hand: readonly Card[]): Card[] {
   return hand.filter(
-    (_, discarded) => minDeadwood(hand.filter((_, kept) => kept !== discarded)) === 0,
+    (_, discardIndex) => minDeadwood(hand.filter((_, keptIndex) => keptIndex !== discardIndex)) === 0,
   )
 }

@@ -1,22 +1,7 @@
-import { useState } from 'react'
-import './App.css'
+import { TableCanvas } from './TableCanvas.tsx'
 
 function App() {
-  const [count, setCount] = useState(0)
-
-  return (
-    <>
-      <h1>Gin Rummy</h1>
-      <div className="card">
-        <button type="button" onClick={() => setCount((count) => count + 1)}>
-          Count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-    </>
-  )
+  return <TableCanvas />
 }
 
 export default App

@@ -1,22 +1,172 @@
-import { useState } from 'react'
-import './App.css'
+import { useSyncExternalStore } from 'react'
+import type { CSSProperties } from 'react'
+import { TableCanvas } from './TableCanvas.tsx'
+import { createGameStore } from './store.ts'
+import { createLoopbackTransport } from './loopback.ts'
+import type { LoopbackTransport } from './loopback.ts'
+import { legalActions } from './engine/game.ts'
+import { ginDiscards } from './engine/melds.ts'
+import { cardKey, sameCard } from './engine/cards.ts'
+import type { Action, EngineState, Seat } from './engine/game.ts'
+import type { Card } from './engine/cards.ts'
+
+// ?seat=a runs the creating tab (sequencer shim), ?seat=b joins it over
+// the BroadcastChannel loopback; no param is the single-tab hotseat
+// harness. In loopback modes every action goes submit -> stamp -> echo;
+// the store only ever applies stamped actions.
+const params = new URLSearchParams(window.location.search)
+const mode: 'solo' | 'creator' | 'joiner' =
+  params.get('seat') === 'b' ? 'joiner' : params.get('seat') === 'a' ? 'creator' : 'solo'
+
+const store = createGameStore()
+let transport: LoopbackTransport | null = null
+let submit: (action: Action) => void
+if (mode === 'solo') {
+  store.start({ seed: Date.now() >>> 0, dealer: 'a', viewerSeat: 'a' })
+  submit = (action) => store.apply(action)
+} else {
+  const live = createLoopbackTransport({ role: mode, store, seed: Date.now() >>> 0 })
+  transport = live
+  submit = (action) => live.submit(action)
+}
+
+// This top-level bootstrap re-runs on any hot update that reaches this
+// module; a second live transport would corrupt the room. Dispose the
+// old one and reload outright (invalidate() would stop at the React
+// refresh boundary - verified against the dev-server log).
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload()
+  })
+  import.meta.hot.dispose(() => {
+    transport?.destroy()
+  })
+}
+
+function statusFor(game: EngineState | null, seatToPlay: Seat): string {
+  if (!game) {
+    return mode === 'joiner' ? 'waiting for the creating tab (open ?seat=a)' : 'no game'
+  }
+  if (game.result) {
+    return game.result.type === 'gin'
+      ? `Gin! Seat ${game.result.winner} wins by ${game.result.margin}.`
+      : 'Dead hand - the stock ran out.'
+  }
+  if (mode === 'solo' || game.toAct === seatToPlay) {
+    return `${game.phase} - seat ${seatToPlay} to act`
+  }
+  return `waiting - seat ${game.toAct ?? '?'} is thinking`
+}
 
 function App() {
-  const [count, setCount] = useState(0)
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot)
+  const game = snapshot.game
+  // Solo hotseat follows the acting seat; at hand end the winner's view
+  // stays at the bottom (toAct is null then, and the dealer would be an
+  // arbitrary camera jump). Loopback perspectives are fixed per tab.
+  const soloFallback: Seat = game?.result?.type === 'gin' ? game.result.winner : (game?.dealer ?? 'a')
+  const seatToPlay: Seat =
+    mode === 'solo' ? (game?.toAct ?? soloFallback) : (snapshot.viewerSeat ?? 'a')
+  const legal = game ? legalActions(game, seatToPlay) : []
+  const selected = snapshot.selectedCard
+
+  const ginKeys: ReadonlySet<string> = new Set(
+    game && game.phase === 'discard' && game.toAct === seatToPlay
+      ? ginDiscards(game.hands[seatToPlay]).map(cardKey)
+      : [],
+  )
+  const discardBlocked =
+    selected && game?.takenFromDiscard ? sameCard(selected, game.takenFromDiscard) : false
+
+  const submitDiscard = (declareGin: boolean) => {
+    if (selected) submit({ type: 'discard', seat: seatToPlay, card: selected, declareGin })
+  }
+
+  const handlers = {
+    onCardClick: (clicked: Card) => {
+      const held = game?.hands[seatToPlay].some((own) => sameCard(own, clicked)) ?? false
+      if (!held) return
+      store.selectCard(selected && sameCard(clicked, selected) ? null : clicked)
+    },
+    onStockClick: () => {
+      if (legal.includes('drawStock')) submit({ type: 'drawStock', seat: seatToPlay })
+    },
+    // An undeclared discard of a gin card is a legitimate plain discard:
+    // no explicit declaration, no gin (user ruling, per the rules).
+    onDiscardPileClick: () => {
+      if (legal.includes('takeUpcard')) submit({ type: 'takeUpcard', seat: seatToPlay })
+      else if (legal.includes('drawDiscard')) submit({ type: 'drawDiscard', seat: seatToPlay })
+      else if (legal.includes('discard') && selected && !discardBlocked) submitDiscard(false)
+    },
+  }
+
+  const seatLabel = mode === 'solo' ? 'hotseat' : `seat ${seatToPlay} (${mode})`
+  const status = statusFor(game, seatToPlay)
 
   return (
-    <>
-      <h1>Gin Rummy</h1>
-      <div className="card">
-        <button type="button" onClick={() => setCount((count) => count + 1)}>
-          Count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <TableCanvas
+        snapshot={snapshot}
+        perspective={seatToPlay}
+        ginKeys={ginKeys}
+        handlers={handlers}
+      />
+      <div style={overlayStyle}>
+        <span>{`[${seatLabel}] ${status}`}</span>
+        {legal.includes('startHand') && (
+          <button type="button" onClick={() => submit({ type: 'startHand' })}>
+            Deal
+          </button>
+        )}
+        {game && game.phase !== 'handOver' && (
+          <button type="button" onClick={() => store.toggleAutoGroup()}>
+            {snapshot.autoGroup ? 'grouping: on' : 'grouping: off'}
+          </button>
+        )}
+        {legal.includes('takeUpcard') && (
+          <button type="button" onClick={() => submit({ type: 'takeUpcard', seat: seatToPlay })}>
+            Take upcard
+          </button>
+        )}
+        {legal.includes('passUpcard') && (
+          <button type="button" onClick={() => submit({ type: 'passUpcard', seat: seatToPlay })}>
+            Pass
+          </button>
+        )}
+        {legal.includes('discard') && selected && !discardBlocked && (
+          <button type="button" onClick={() => submitDiscard(false)}>
+            Discard selected
+          </button>
+        )}
+        {legal.includes('discard') && selected && discardBlocked && (
+          <span style={{ opacity: 0.7 }}>the card you just took cannot go straight back</span>
+        )}
+        {ginKeys.size > 0 && !(selected && ginKeys.has(cardKey(selected))) && (
+          <span>gin available - select a gold card</span>
+        )}
+        {selected && ginKeys.has(cardKey(selected)) && (
+          <button type="button" onClick={() => submitDiscard(true)}>
+            Declare gin!
+          </button>
+        )}
       </div>
-    </>
+    </div>
   )
+}
+
+const overlayStyle: CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  display: 'flex',
+  gap: '0.5rem',
+  alignItems: 'center',
+  padding: '0.4rem 0.8rem',
+  background: 'rgba(0, 0, 0, 0.55)',
+  color: '#fff',
+  borderRadius: '0 0 8px 8px',
+  fontSize: '0.9rem',
 }
 
 export default App

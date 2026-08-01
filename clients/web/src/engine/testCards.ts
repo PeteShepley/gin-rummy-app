@@ -1,9 +1,5 @@
-import { RANKS, SUITS } from './cards.ts'
+import { RANKS, SUITS, cardKey } from './cards.ts'
 import type { Card, Rank, Suit } from './cards.ts'
-
-export function cardKey(card: Card): string {
-  return `${card.rank}:${card.suit}`
-}
 
 // Builds cards from 'rank:suit' specs, throwing on any typo so a bad
 // fixture fails at the fixture, not as a baffling engine assertion.

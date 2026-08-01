@@ -1,4 +1,4 @@
-import { RANKS, cardValue } from './cards.ts'
+import { RANKS, SUITS, cardValue } from './cards.ts'
 import type { Card, Rank, Suit } from './cards.ts'
 
 const RANK_COUNT = RANKS.length
@@ -54,26 +54,70 @@ function candidateMeldMasks(hand: readonly Card[]): number[] {
   return [...masks]
 }
 
-export function minDeadwood(hand: readonly Card[]): number {
+// A meld reads naturally: a set by suit order, a run walked along its
+// arc (so a wrap run reads K, A, 2 across the corner). The arc starts
+// at the one rank whose predecessor is not in the run.
+function orderMeld(meld: readonly Card[]): Card[] {
+  if (meld.every((held) => held.rank === meld[0].rank)) {
+    return [...meld].sort((a, b) => SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit))
+  }
+  const present = new Set(meld.map((held) => rankIndex(held.rank)))
+  let start = rankIndex(meld[0].rank)
+  for (const held of meld) {
+    const index = rankIndex(held.rank)
+    if (!present.has((index + RANK_COUNT - 1) % RANK_COUNT)) start = index
+  }
+  const byIndex = new Map(meld.map((held) => [rankIndex(held.rank), held]))
+  return Array.from(
+    { length: meld.length },
+    (_, step) => byIndex.get((start + step) % RANK_COUNT)!,
+  )
+}
+
+export interface Arrangement {
+  readonly melds: readonly (readonly Card[])[]
+  readonly deadwood: readonly Card[]
+}
+
+// The best way to hold the hand: disjoint melds maximising melded value,
+// remainder as deadwood. Deterministic - ties keep the first arrangement
+// the search reaches - so both clients always lay down the same proof.
+export function bestArrangement(hand: readonly Card[]): Arrangement {
   const meldMasks = candidateMeldMasks(hand)
   const values = hand.map((card) => cardValue(card.rank))
   const meldValues = meldMasks.map((mask) =>
     values.reduce((sum, value, index) => (mask & (1 << index) ? sum + value : sum), 0),
   )
-  const total = values.reduce((sum, value) => sum + value, 0)
-  // Highest total value meldable with disjoint melds picked from position
-  // `from` onwards, given the cards already used.
-  const bestMelded = (used: number, from: number): number => {
-    let best = 0
+  let bestValue = -1
+  let bestMasks: number[] = []
+  const search = (used: number, melded: number, from: number, chosen: number[]) => {
+    if (melded > bestValue) {
+      bestValue = melded
+      bestMasks = [...chosen]
+    }
     for (let i = from; i < meldMasks.length; i++) {
       if ((meldMasks[i] & used) === 0) {
-        const candidate = meldValues[i] + bestMelded(used | meldMasks[i], i + 1)
-        if (candidate > best) best = candidate
+        chosen.push(meldMasks[i])
+        search(used | meldMasks[i], melded + meldValues[i], i + 1, chosen)
+        chosen.pop()
       }
     }
-    return best
   }
-  return total - bestMelded(0, 0)
+  search(0, 0, 0, [])
+  const melded = bestMasks.reduce((all, mask) => all | mask, 0)
+  return {
+    melds: bestMasks.map((mask) => orderMeld(hand.filter((_, index) => mask & (1 << index)))),
+    deadwood: hand
+      .filter((_, index) => !(melded & (1 << index)))
+      .sort(
+        (a, b) =>
+          rankIndex(a.rank) - rankIndex(b.rank) || SUITS.indexOf(a.suit) - SUITS.indexOf(b.suit),
+      ),
+  }
+}
+
+export function minDeadwood(hand: readonly Card[]): number {
+  return bestArrangement(hand).deadwood.reduce((sum, held) => sum + cardValue(held.rank), 0)
 }
 
 // Which discards from an 11-card hand leave the remaining ten fully

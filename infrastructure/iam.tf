@@ -24,7 +24,7 @@ data "aws_iam_policy_document" "github_deploy_api_assume" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:*"]
+      values   = ["${var.github_repo_immutable_token}:*"]
     }
   }
 }

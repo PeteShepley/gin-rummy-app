@@ -45,3 +45,9 @@ variable "root_domain_name" {
   type        = string
   default     = "peteshepley.com"
 }
+
+variable "github_repo_immutable_token" {
+  description = "The immutable token for OIDC github access"
+  type = string
+  default = "repo:PeteShepley@8782832/gin-rummy-app@1318381709"
+}

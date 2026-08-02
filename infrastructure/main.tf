@@ -27,10 +27,11 @@ provider "aws" {
 
 # The consolidated per-repo GitHub OIDC deploy role (gha-deploy-gin-rummy-app),
 # created in operations/infra/002-github-projects. iam.tf and web.tf each attach
-# their own policy to it. The legacy per-purpose roles (github_deploy_api in
-# iam.tf, and the one the module still creates in web.tf) stay in place and in
-# use alongside it until AWS_ROLE_ARN secrets are cut over and those roles are
-# decommissioned.
+# their own policy to it (Lambda deploy, S3/CloudFront deploy).
 data "aws_ssm_parameter" "deploy_role_name" {
   name = "/github-deploy/gin-rummy-app/role-name"
+}
+
+data "aws_ssm_parameter" "deploy_role_arn" {
+  name = "/github-deploy/gin-rummy-app/role-arn"
 }

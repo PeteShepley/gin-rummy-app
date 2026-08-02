@@ -31,8 +31,9 @@ output "cloudfront_hosted_zone_id" {
 }
 
 output "web_github_deploy_role_arn" {
-  description = "ARN for the web client's GitHub Actions deploy role — set as AWS_ROLE_ARN_WEB in the repo's Actions secrets"
-  value       = module.web.github_deploy_role_arn
+  description = "ARN for the consolidated GitHub Actions deploy role — set as AWS_ROLE_ARN_WEB in the repo's Actions secrets (same role/ARN as api_github_deploy_role_arn below)"
+  sensitive   = true
+  value       = data.aws_ssm_parameter.deploy_role_arn.value
 }
 
 # --- API (services/api) ---
@@ -68,6 +69,7 @@ output "api_custom_domain_hosted_zone_id" {
 }
 
 output "api_github_deploy_role_arn" {
-  description = "ARN for the API's GitHub Actions deploy role — set as AWS_ROLE_ARN_API in the repo's Actions secrets"
-  value       = aws_iam_role.github_deploy_api.arn
+  description = "ARN for the consolidated GitHub Actions deploy role — set as AWS_ROLE_ARN_API in the repo's Actions secrets (same role/ARN as web_github_deploy_role_arn above)"
+  sensitive   = true
+  value       = data.aws_ssm_parameter.deploy_role_arn.value
 }

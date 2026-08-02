@@ -1,5 +1,5 @@
 import { Assets, Container, Graphics, Sprite, Text } from 'pixi.js'
-import type { Application, Texture } from 'pixi.js'
+import type { Application, Texture, Ticker } from 'pixi.js'
 import { cardAssetUrl } from './cardAssets.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
 import { newDeck } from './engine/deck.ts'
@@ -17,6 +17,27 @@ const RAISE = 18
 const GROUP_GAP = 22
 const DEADWOOD_TINT = 0xbdbdbd
 const GIN_TINT = 0xffd54a
+const NO_TINT = 0xffffff
+
+// Motion tuning. A sprite eases toward its target by exponential
+// smoothing rather than a fixed-duration tween, so a target that moves
+// mid-flight - select a card while it is still settling, resize under a
+// sliding deal, discard a card that is not yet at rest - is chased, not
+// fought. MOVE_TAU is the time constant in ms; smaller is snappier.
+const MOVE_TAU = 80
+const FADE_MS = 160 // a departing sprite fades over this long, then dies
+const SNAP_PX = 0.5 // once within this of its target a sprite sits exactly on it
+const LIFT_PX = 3 // a sprite farther than this from its target counts as in flight
+
+// Draw order. Cards in flight lift above the whole table so a slide
+// never disappears behind a pile or a neighbour; the halo sits just
+// under the card it frames.
+const Z_OPPONENT = 0
+const Z_PILE = 10
+const Z_COUNT = 12
+const Z_HALO = 18
+const Z_HAND = 20
+const Z_FLIGHT = 1000
 
 // The canvas mount captures this module in a closure; a hot update would
 // leave that stale closure rendering old code. invalidate() only bubbles
@@ -39,12 +60,45 @@ export interface TableScene {
   destroy(): void
 }
 
-// The scene owns sprites and layout; the store owns truth; the shell
-// derives the gin offer and passes it in. update() derives everything
-// game-shaped once per snapshot; layout() is geometry only, so resizes
-// never re-run the meld search. v1 rebuilds the sprite graph on every
-// update - cheap at ~52 sprites, and a diffing reconciler earns its
-// keep only once tweens arrive.
+// One card the scene wants on screen: a stable identity, where it belongs
+// now, and how it behaves there. Face-known cards are keyed by the card
+// itself, so a card that moves zones - hand to discard on a throw, discard
+// to hand on a pickup - keeps the same sprite and slides between the two.
+// Face-down piles are keyed by role, since the viewer must not learn them.
+interface CardTarget {
+  key: string
+  texture: Texture
+  x: number
+  y: number
+  tint: number
+  baseZ: number
+  // Where a freshly created sprite starts before its first slide. New
+  // hand and pile cards fly in from the deck; reveal cards just appear.
+  spawn: { x: number; y: number } | null
+  onTap: (() => void) | null
+}
+
+interface Managed {
+  sprite: Sprite
+  tx: number
+  ty: number
+  baseZ: number
+  leaving: boolean
+}
+
+interface BuildResult {
+  cards: CardTarget[]
+  count: { text: string; x: number; y: number } | null
+  slot: { x: number; y: number } | null
+  haloKey: string | null
+}
+
+// The scene owns sprites and their motion; the store owns truth; the
+// shell derives the gin offer and passes it in. update() derives
+// everything game-shaped once per snapshot; a ticker eases each sprite
+// toward its target every frame, so the store stays free of animation
+// state (per the design's determinism ban) and resizes never re-run the
+// meld search.
 export async function createTableScene(
   app: Application,
   handlers: SceneHandlers,
@@ -57,7 +111,31 @@ export async function createTableScene(
   )
   const back = backTexture(app)
   const root = new Container()
+  root.sortableChildren = true
   app.stage.addChild(root)
+
+  // Decorations live outside the tweened card pool: they never move
+  // between zones, so they are created once and repositioned in place.
+  const halo = new Graphics()
+    .roundRect(-(CARD_W + 10) / 2, -(CARD_H + 10) / 2, CARD_W + 10, CARD_H + 10, 10)
+    .stroke({ width: 3, color: 0x7fd1ff })
+  halo.zIndex = Z_HALO
+  halo.visible = false
+  root.addChild(halo)
+
+  const stockCount = new Text({ text: '', style: { fill: '#ffffff', fontSize: 16 } })
+  stockCount.anchor.set(0.5)
+  stockCount.zIndex = Z_COUNT
+  stockCount.visible = false
+  root.addChild(stockCount)
+
+  const emptySlot = new Graphics()
+  emptySlot.zIndex = Z_PILE
+  emptySlot.visible = false
+  emptySlot.eventMode = 'static'
+  emptySlot.cursor = 'pointer'
+  emptySlot.on('pointertap', () => handlers.onDiscardPileClick())
+  root.addChild(emptySlot)
 
   interface Derived {
     snapshot: GameSnapshot
@@ -68,101 +146,245 @@ export async function createTableScene(
   }
   let last: Derived | null = null
 
+  // Persistent sprites, keyed by CardTarget.key. Reconcile grows and
+  // prunes this; the ticker walks it and moves everything.
+  const managed = new Map<string, Managed>()
+  let haloKey: string | null = null
+
   const face = (of: Card): Texture => {
     const texture = faces.get(cardKey(of))
     if (!texture) throw new Error(`no texture loaded for ${cardKey(of)}`)
     return texture
   }
 
-  const card = (texture: Texture, x: number, y: number): Sprite => {
-    const sprite = new Sprite(texture)
-    sprite.anchor.set(0.5)
-    sprite.width = CARD_W
-    sprite.height = CARD_H
-    sprite.position.set(x, y)
-    root.addChild(sprite)
-    return sprite
-  }
-
-  const clickable = (target: Container, onTap: () => void) => {
-    target.eventMode = 'static'
-    target.cursor = 'pointer'
-    target.on('pointertap', onTap)
-  }
-
-  const layout = () => {
-    if (!last) return
-    for (const child of root.removeChildren()) child.destroy({ children: true })
-    const { snapshot, perspective, ginKeys, reveal, handGroups } = last
+  // Geometry only - no meld search, no sprite churn - so it is cheap
+  // enough to re-run on every resize frame.
+  const buildTargets = (): BuildResult => {
+    const { snapshot, perspective, ginKeys, reveal, handGroups } = last!
     const game = snapshot.game
-    if (!game) return
     const { width, height } = app.screen
+    const cards: CardTarget[] = []
+    if (!game) return { cards, count: null, slot: null, haloKey: null }
 
-    // The lay-down: a finished hand is proof, so both hands show face
-    // up, clustered by their best arrangement, deadwood greyed.
+    const stockCenter = { x: width / 2 - CARD_W * 0.75, y: height / 2 }
+    const slotX = width / 2 + CARD_W * 0.75
+
+    // The lay-down: a finished hand is proof, so both hands show face up,
+    // clustered by their best arrangement, deadwood greyed. Reveal cards
+    // appear in place; the viewer's own cards keep their keys and slide
+    // from their in-hand spots into the grouped arrangement.
     if (reveal) {
       const show = (arrangement: Arrangement, y: number) => {
         const deadwoodKeys = new Set(arrangement.deadwood.map(cardKey))
         for (const placed of groupedXs([...arrangement.melds, arrangement.deadwood], width)) {
-          const sprite = card(face(placed.held), placed.x, y)
-          if (deadwoodKeys.has(cardKey(placed.held))) sprite.tint = DEADWOOD_TINT
+          cards.push({
+            key: cardKey(placed.held),
+            texture: face(placed.held),
+            x: placed.x,
+            y,
+            tint: deadwoodKeys.has(cardKey(placed.held)) ? DEADWOOD_TINT : NO_TINT,
+            baseZ: Z_HAND,
+            spawn: null,
+            onTap: null,
+          })
         }
       }
       show(reveal.top, EDGE + CARD_H / 2)
       show(reveal.bottom, height - EDGE - CARD_H / 2)
-      return
+      return { cards, count: null, slot: null, haloKey: null }
     }
 
-    for (const placed of groupedXs([game.hands[otherSeat(perspective)]], width)) {
-      card(back, placed.x, EDGE + CARD_H / 2)
-    }
-
-    if (game.stock.length > 0) {
-      const stockX = width / 2 - CARD_W * 0.75
-      clickable(card(back, stockX, height / 2), handlers.onStockClick)
-      const count = new Text({
-        text: `${game.stock.length}`,
-        style: { fill: '#ffffff', fontSize: 16 },
+    // The opponent's hand is a row of face-down backs, keyed by position:
+    // the viewer never learns which cards they are.
+    groupedXs([game.hands[otherSeat(perspective)]], width).forEach((placed, index) => {
+      cards.push({
+        key: `opp:${index}`,
+        texture: back,
+        x: placed.x,
+        y: EDGE + CARD_H / 2,
+        tint: NO_TINT,
+        baseZ: Z_OPPONENT,
+        spawn: stockCenter,
+        onTap: null,
       })
-      count.anchor.set(0.5)
-      count.position.set(stockX, height / 2 + CARD_H / 2 + 14)
-      root.addChild(count)
+    })
+
+    let count: BuildResult['count'] = null
+    if (game.stock.length > 0) {
+      cards.push({
+        key: 'stock',
+        texture: back,
+        x: stockCenter.x,
+        y: stockCenter.y,
+        tint: NO_TINT,
+        baseZ: Z_PILE,
+        spawn: null,
+        onTap: handlers.onStockClick,
+      })
+      count = { text: `${game.stock.length}`, x: stockCenter.x, y: stockCenter.y + CARD_H / 2 + 14 }
     }
 
-    const slotX = width / 2 + CARD_W * 0.75
+    let slot: BuildResult['slot'] = null
     const top = game.discardPile[game.discardPile.length - 1]
     if (top) {
-      clickable(card(face(top), slotX, height / 2), handlers.onDiscardPileClick)
+      // Keyed by the card, so the sprite thrown from a hand becomes this
+      // one and the slide is free; a card drawn back off the pile is this
+      // same sprite leaving for the hand.
+      cards.push({
+        key: cardKey(top),
+        texture: face(top),
+        x: slotX,
+        y: height / 2,
+        tint: NO_TINT,
+        baseZ: Z_PILE,
+        spawn: stockCenter,
+        onTap: handlers.onDiscardPileClick,
+      })
     } else {
-      const slot = new Graphics()
-        .roundRect(slotX - CARD_W / 2, height / 2 - CARD_H / 2, CARD_W, CARD_H, 8)
-        .fill({ color: 0xffffff, alpha: 0.08 })
-        .stroke({ width: 2, color: 0xffffff, alpha: 0.5 })
-      clickable(slot, handlers.onDiscardPileClick)
-      root.addChild(slot)
+      slot = { x: slotX, y: height / 2 }
     }
 
+    let nextHaloKey: string | null = null
     for (const placed of groupedXs(handGroups, width)) {
       const held = placed.held
       const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? RAISE : 0
-      const y = height - EDGE - CARD_H / 2 - raised
+      cards.push({
+        key: cardKey(held),
+        texture: face(held),
+        x: placed.x,
+        y: height - EDGE - CARD_H / 2 - raised,
+        tint: ginKeys.has(cardKey(held)) ? GIN_TINT : NO_TINT,
+        baseZ: Z_HAND,
+        spawn: stockCenter,
+        onTap: () => handlers.onCardClick(held),
+      })
       if (
         snapshot.lastDrawn &&
         snapshot.lastDrawn.seat === perspective &&
         sameCard(held, snapshot.lastDrawn.card)
       ) {
-        const halo = new Graphics()
-          .roundRect(placed.x - (CARD_W + 10) / 2, y - (CARD_H + 10) / 2, CARD_W + 10, CARD_H + 10, 10)
-          .stroke({ width: 3, color: 0x7fd1ff })
-        root.addChild(halo)
+        nextHaloKey = cardKey(held)
       }
-      const sprite = card(face(held), placed.x, y)
-      if (ginKeys.has(cardKey(held))) sprite.tint = GIN_TINT
-      clickable(sprite, () => handlers.onCardClick(held))
     }
+
+    return { cards, count, slot, haloKey: nextHaloKey }
   }
 
-  const onResize = () => layout()
+  const spawn = (target: CardTarget): Managed => {
+    const sprite = new Sprite(target.texture)
+    sprite.anchor.set(0.5)
+    sprite.width = CARD_W
+    sprite.height = CARD_H
+    const from = target.spawn ?? { x: target.x, y: target.y }
+    sprite.position.set(from.x, from.y)
+    sprite.zIndex = target.baseZ
+    root.addChild(sprite)
+    return { sprite, tx: target.x, ty: target.y, baseZ: target.baseZ, leaving: false }
+  }
+
+  // Diff the target list against the live sprite pool: adopt or spawn a
+  // sprite per target, retarget it, rebind its tap, and mark anything no
+  // longer wanted as leaving. The ticker does the actual moving.
+  const reconcile = () => {
+    if (!last) return
+    const { cards, count, slot, haloKey: nextHaloKey } = buildTargets()
+    const seen = new Set<string>()
+    for (const target of cards) {
+      seen.add(target.key)
+      let entry = managed.get(target.key)
+      if (!entry) {
+        entry = spawn(target)
+        managed.set(target.key, entry)
+      } else if (entry.leaving) {
+        // A key can return before its fade finishes (an opponent's count
+        // oscillating across a turn); revive the sprite in place.
+        entry.leaving = false
+        entry.sprite.alpha = 1
+      }
+      const sprite = entry.sprite
+      if (sprite.texture !== target.texture) sprite.texture = target.texture
+      sprite.tint = target.tint
+      entry.tx = target.x
+      entry.ty = target.y
+      entry.baseZ = target.baseZ
+      sprite.removeAllListeners('pointertap')
+      if (target.onTap) {
+        sprite.eventMode = 'static'
+        sprite.cursor = 'pointer'
+        sprite.on('pointertap', target.onTap)
+      } else {
+        sprite.eventMode = 'none'
+        sprite.cursor = 'default'
+      }
+    }
+    for (const [key, entry] of managed) {
+      if (seen.has(key) || entry.leaving) continue
+      entry.leaving = true
+      entry.sprite.removeAllListeners('pointertap')
+      entry.sprite.eventMode = 'none'
+    }
+
+    if (count) {
+      stockCount.text = count.text
+      stockCount.position.set(count.x, count.y)
+      stockCount.visible = true
+    } else {
+      stockCount.visible = false
+    }
+
+    if (slot) {
+      emptySlot
+        .clear()
+        .roundRect(slot.x - CARD_W / 2, slot.y - CARD_H / 2, CARD_W, CARD_H, 8)
+        .fill({ color: 0xffffff, alpha: 0.08 })
+        .stroke({ width: 2, color: 0xffffff, alpha: 0.5 })
+      emptySlot.visible = true
+    } else {
+      emptySlot.visible = false
+    }
+
+    haloKey = nextHaloKey
+  }
+
+  const tick = (ticker: Ticker) => {
+    const dt = ticker.deltaMS
+    const k = 1 - Math.exp(-dt / MOVE_TAU)
+    for (const [key, entry] of managed) {
+      const sprite = entry.sprite
+      if (entry.leaving) {
+        sprite.alpha -= dt / FADE_MS
+        if (sprite.alpha <= 0) {
+          sprite.destroy()
+          managed.delete(key)
+        }
+        continue
+      }
+      const dx = entry.tx - sprite.x
+      const dy = entry.ty - sprite.y
+      if (dx * dx + dy * dy < SNAP_PX * SNAP_PX) {
+        sprite.position.set(entry.tx, entry.ty)
+        sprite.zIndex = entry.baseZ
+      } else {
+        sprite.x += dx * k
+        sprite.y += dy * k
+        sprite.zIndex = entry.baseZ + (dx * dx + dy * dy > LIFT_PX * LIFT_PX ? Z_FLIGHT : 0)
+      }
+    }
+    // The halo frames the just-drawn card, but only once it has landed:
+    // it tracks the sprite's live position and stays hidden mid-flight.
+    const drawn = haloKey ? managed.get(haloKey) : undefined
+    if (drawn && !drawn.leaving) {
+      const dx = drawn.tx - drawn.sprite.x
+      const dy = drawn.ty - drawn.sprite.y
+      halo.position.set(drawn.sprite.x, drawn.sprite.y)
+      halo.visible = dx * dx + dy * dy < LIFT_PX * LIFT_PX
+    } else {
+      halo.visible = false
+    }
+  }
+  app.ticker.add(tick)
+
+  const onResize = () => reconcile()
   app.renderer.on('resize', onResize)
 
   return {
@@ -185,11 +407,13 @@ export async function createTableScene(
         }
       }
       last = { snapshot, perspective, ginKeys, reveal, handGroups }
-      layout()
+      reconcile()
     },
     destroy() {
+      app.ticker.remove(tick)
       app.renderer.off('resize', onResize)
       root.destroy({ children: true })
+      managed.clear()
     },
   }
 }

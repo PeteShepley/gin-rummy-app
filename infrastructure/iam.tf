@@ -7,7 +7,9 @@ data "aws_iam_policy_document" "github_deploy_api" {
       "lambda:GetFunction",
       "lambda:GetFunctionConfiguration",
     ]
-    resources = [aws_lambda_function.api.arn]
+    # The same consolidated deploy role updates both Lambdas' code: the HTTP
+    # API (deploy-api.yml) and the WebSocket relay (deploy-relay.yml).
+    resources = [aws_lambda_function.api.arn, aws_lambda_function.relay.arn]
   }
 }
 

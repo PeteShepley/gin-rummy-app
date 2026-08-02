@@ -73,3 +73,35 @@ output "api_github_deploy_role_arn" {
   sensitive   = true
   value       = data.aws_ssm_parameter.deploy_role_arn.value
 }
+
+# --- WebSocket relay (services/relay) ---
+
+output "relay_function_name" {
+  description = "Name of the gin-rummy-relay Lambda function — set as RELAY_FUNCTION_NAME in the repo's Actions variables"
+  value       = aws_lambda_function.relay.function_name
+}
+
+output "relay_function_arn" {
+  description = "ARN of the gin-rummy-relay Lambda function"
+  value       = aws_lambda_function.relay.arn
+}
+
+output "ws_endpoint" {
+  description = "Raw WebSocket invoke URL (execute-api) — still live alongside the custom domain below"
+  value       = aws_apigatewayv2_stage.ws_default.invoke_url
+}
+
+output "ws_custom_domain_url" {
+  description = "Custom-domain WebSocket URL — set as VITE_WS_URL in the repo's Actions variables"
+  value       = "wss://${aws_apigatewayv2_domain_name.gin_rummy_ws.domain_name}"
+}
+
+output "ws_custom_domain_target" {
+  description = "Regional target domain name for the WS custom domain — needed for a Route53 alias record"
+  value       = aws_apigatewayv2_domain_name.gin_rummy_ws.domain_name_configuration[0].target_domain_name
+}
+
+output "ws_custom_domain_hosted_zone_id" {
+  description = "Hosted zone ID for ws_custom_domain_target — needed for a Route53 alias record"
+  value       = aws_apigatewayv2_domain_name.gin_rummy_ws.domain_name_configuration[0].hosted_zone_id
+}

@@ -28,6 +28,18 @@ variable "cors_allowed_origins" {
   default     = ["https://gin-rummy.peteshepley.com", "http://localhost:5173"]
 }
 
+variable "ws_domain_name" {
+  description = "Custom domain for the relay's WebSocket API"
+  type        = string
+  default     = "gin-rummy.ws.peteshepley.com"
+}
+
+variable "ws_root_domain_name" {
+  description = "Root domain whose wildcard ACM cert covers ws_domain_name"
+  type        = string
+  default     = "ws.peteshepley.com"
+}
+
 variable "site_bucket_name" {
   description = "Globally unique name for the S3 bucket that stores the built web client"
   type        = string

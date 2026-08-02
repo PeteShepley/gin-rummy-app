@@ -1,28 +1,11 @@
-import type { Action, Seat } from './engine/game.ts'
+import type { Action } from './engine/game.ts'
 import type { GameStore } from './store.ts'
+import type { Contract, Stamped, WireMessage } from './protocol.ts'
 
-// The locked message schema from DESIGN.md, spoken verbatim: the phase-3
-// relay replaces the sequencer shim and the channel without changing any
-// message shape. The creating tab is the sequencer; clients apply only
-// stamped actions, in order, including the echoes of their own.
-
-interface Contract {
-  readonly seed: number
-  readonly dealer: Seat
-  readonly seats: { readonly creator: Seat; readonly joiner: Seat }
-}
-
-interface Stamped {
-  readonly seq: number
-  readonly action: Action
-}
-
-type WireMessage =
-  | ({ kind: 'start' } & Contract)
-  | { kind: 'submit'; action: Action }
-  | ({ kind: 'action' } & Stamped)
-  | { kind: 'resyncRequest' }
-  | ({ kind: 'resync' } & Contract & { readonly log: readonly Stamped[] })
+// The locked message schema from DESIGN.md, spoken verbatim from protocol.ts:
+// the phase-3 relay replaces the sequencer shim and the channel without
+// changing any message shape. The creating tab is the sequencer; clients
+// apply only stamped actions, in order, including the echoes of their own.
 
 export interface LoopbackTransport {
   submit(action: Action): void
@@ -44,7 +27,12 @@ export function createLoopbackTransport(options: {
   let contractApplied = false
 
   const applyContract = (contract: Contract) => {
-    store.start({ seed: contract.seed, dealer: contract.dealer, viewerSeat: mySeat })
+    store.start({
+      seed: contract.seed,
+      dealer: contract.dealer,
+      viewerSeat: mySeat,
+      names: contract.names,
+    })
     expectedSeq = 1
     contractApplied = true
   }
@@ -80,7 +68,13 @@ export function createLoopbackTransport(options: {
   }
 
   if (role === 'creator') {
-    const contract: Contract = { seed: options.seed ?? 1, dealer: seats.creator, seats }
+    // Dev mode has no name entry; the seats get static labels.
+    const contract: Contract = {
+      seed: options.seed ?? 1,
+      dealer: seats.creator,
+      seats,
+      names: { a: 'Seat A', b: 'Seat B' },
+    }
     sequencer = { contract, log: [], nextSeq: 1 }
     applyContract(contract)
     // A joiner may already be waiting (it opened first): announce the

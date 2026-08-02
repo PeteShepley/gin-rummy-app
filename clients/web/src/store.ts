@@ -6,10 +6,15 @@ import type { Card } from './engine/cards.ts'
 export interface GameSnapshot {
   readonly game: EngineState | null
   readonly viewerSeat: Seat | null
+  // The display name shown on each seat, from the hand contract. Dev modes
+  // and a contract that omits names fall back to static labels.
+  readonly names: Record<Seat, string>
   readonly selectedCard: Card | null
   readonly autoGroup: boolean
   readonly lastDrawn: { readonly seat: Seat; readonly card: Card } | null
 }
+
+const DEFAULT_NAMES: Record<Seat, string> = { a: 'Seat A', b: 'Seat B' }
 
 // The card an accepted draw added to the acting hand, tagged with whose
 // draw it was so readers must say which seat they care about; anything
@@ -34,7 +39,12 @@ function drawnBy(
 export interface GameStore {
   subscribe(listener: () => void): () => void
   getSnapshot(): GameSnapshot
-  start(contract: { seed: number; dealer: Seat; viewerSeat: Seat }): void
+  start(contract: {
+    seed: number
+    dealer: Seat
+    viewerSeat: Seat
+    names?: Record<Seat, string>
+  }): void
   apply(action: Action): void
   selectCard(card: Card | null): void
   toggleAutoGroup(): void
@@ -44,6 +54,7 @@ export function createGameStore(): GameStore {
   let snapshot: GameSnapshot = {
     game: null,
     viewerSeat: null,
+    names: DEFAULT_NAMES,
     selectedCard: null,
     autoGroup: false,
     lastDrawn: null,
@@ -65,11 +76,12 @@ export function createGameStore(): GameStore {
     },
     // A start rebuilds from scratch, per the resync contract: no UI
     // residue from the discarded game survives.
-    start({ seed, dealer, viewerSeat }) {
+    start({ seed, dealer, viewerSeat, names }) {
       replace({
         ...snapshot,
         game: initialState(seed, dealer),
         viewerSeat,
+        names: names ?? DEFAULT_NAMES,
         selectedCard: null,
         lastDrawn: null,
       })

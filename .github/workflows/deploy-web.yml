@@ -29,6 +29,10 @@ jobs:
 
       - name: Build web client
         run: npm run build --workspace=web
+        env:
+          # The relay's WebSocket URL, baked into the client bundle. Set as a
+          # repo Actions variable to the ws_custom_domain_url Terraform output.
+          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4

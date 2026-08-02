@@ -13,3 +13,65 @@ body,
 body {
   margin: 0;
 }
+
+/* The nameplates. A @keyframes rule cannot live in an inline style object,
+   so the turn indicator is the one piece of table chrome that needs a
+   stylesheet. */
+.nameplate {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.7rem;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: clamp(0.75rem, 2.2vw, 0.85rem);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Your own plate rides inside the HUD panel rather than floating over the
+   table, where it would collide with the HUD on a short viewport. */
+.nameplate--inline {
+  position: static;
+  transform: none;
+  padding: 0.1rem 0.5rem;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.nameplate__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.nameplate--active {
+  border-color: #7fd1ff;
+}
+
+.nameplate--active .nameplate__dot {
+  background: #7fd1ff;
+  animation: nameplate-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes nameplate-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(127, 209, 255, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 0.35rem rgba(127, 209, 255, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nameplate--active .nameplate__dot {
+    animation: none;
+  }
+}

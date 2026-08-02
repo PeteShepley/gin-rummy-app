@@ -155,6 +155,17 @@ card game first and the networking later.
   sprite graph and maps store snapshots to sprite targets; it owns all
   tweens, gesture positions, and in-flight card motion locally. Mid-drag, a
   card's position belongs to the pointer, not the store.
+- **Hand order is per-client presentation state.** Dragging a card commits a
+  list of card keys to the store (`handOrder`, keyed by seat) and never an
+  action, so the two clients may hold the same hand in different orders
+  without desyncing — the engine has never read display order. Auto-grouping
+  by `bestArrangement` and a manual order are exclusive: a drag turns
+  grouping off, and the Auto-sort button discards the manual order. The
+  in-progress order lives in the scene, not the store, until the drop.
+- **The table's geometry has one owner.** `layout.ts` maps a viewport to card
+  size and anchor points; the scene draws from it and reports it up so the
+  DOM chrome (HUD, nameplates, feed) lines up with the piles instead of
+  duplicating the numbers. Pixi's `resizeTo` remains the only resize owner.
 - **Canvas lifecycle.** One component owns the Pixi `Application`. Init is
   guarded for React StrictMode's double-invoked effects (Pixi v8's `init()`
   is async — cleanup must await it before `destroy()`), the scene module

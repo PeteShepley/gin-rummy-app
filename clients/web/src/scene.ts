@@ -1,20 +1,20 @@
 import { Assets, Container, Graphics, Sprite, Text } from 'pixi.js'
-import type { Application, Texture, Ticker } from 'pixi.js'
+import type { Application, FederatedPointerEvent, Texture, Ticker } from 'pixi.js'
 import { cardAssetUrl } from './cardAssets.ts'
 import { cardKey, sameCard } from './engine/cards.ts'
 import { newDeck } from './engine/deck.ts'
 import { bestArrangement } from './engine/melds.ts'
 import { otherSeat } from './engine/game.ts'
+import { moveKey, orderHand } from './handOrder.ts'
+import { createFireworks } from './fireworks.ts'
+import { tableMetrics } from './layout.ts'
+import type { Fireworks } from './fireworks.ts'
+import type { TableMetrics } from './layout.ts'
 import type { Arrangement } from './engine/melds.ts'
 import type { Seat } from './engine/game.ts'
 import type { Card } from './engine/cards.ts'
 import type { GameSnapshot } from './store.ts'
 
-const CARD_W = 90
-const CARD_H = 126
-const EDGE = 16
-const RAISE = 18
-const GROUP_GAP = 22
 const DEADWOOD_TINT = 0xbdbdbd
 const GIN_TINT = 0xffd54a
 const NO_TINT = 0xffffff
@@ -29,6 +29,11 @@ const FADE_MS = 160 // a departing sprite fades over this long, then dies
 const SNAP_PX = 0.5 // once within this of its target a sprite sits exactly on it
 const LIFT_PX = 3 // a sprite farther than this from its target counts as in flight
 
+// Drag tuning. Below DRAG_SLOP the gesture is still a tap, so a slightly
+// shaky click selects a card rather than silently reordering the hand.
+const DRAG_SLOP = 5
+const DRAG_LIFT = 1.08 // the held card grows this much, to read as picked up
+
 // Draw order. Cards in flight lift above the whole table so a slide
 // never disappears behind a pile or a neighbour; the halo sits just
 // under the card it frames.
@@ -38,6 +43,8 @@ const Z_COUNT = 12
 const Z_HALO = 18
 const Z_HAND = 20
 const Z_FLIGHT = 1000
+const Z_DRAG = 2000
+const Z_FIREWORKS = 3000
 
 // The canvas mount captures this module in a closure; a hot update would
 // leave that stale closure rendering old code. invalidate() only bubbles
@@ -53,6 +60,11 @@ export interface SceneHandlers {
   onCardClick(card: Card): void
   onStockClick(): void
   onDiscardPileClick(): void
+  // A finished drag: the viewer's hand, in the order they arranged it.
+  onHandReorder(keys: readonly string[]): void
+  // Where the table put things, so the DOM overlay can line up with it
+  // without duplicating the geometry. Fires only when the size changes.
+  onMetrics(metrics: TableMetrics): void
 }
 
 export interface TableScene {
@@ -70,12 +82,16 @@ interface CardTarget {
   texture: Texture
   x: number
   y: number
+  w: number
+  h: number
   tint: number
   baseZ: number
   // Where a freshly created sprite starts before its first slide. New
   // hand and pile cards fly in from the deck; reveal cards just appear.
   spawn: { x: number; y: number } | null
   onTap: (() => void) | null
+  // Set on the viewer's own hand cards: these accept a drag as well as a tap.
+  held: Card | null
 }
 
 interface Managed {
@@ -91,6 +107,20 @@ interface BuildResult {
   count: { text: string; x: number; y: number } | null
   slot: { x: number; y: number } | null
   haloKey: string | null
+}
+
+// A drag in progress. The order lives here rather than in the store because
+// mid-drag a card's position belongs to the pointer, not to shared state; only
+// the finished arrangement is committed.
+interface Drag {
+  key: string
+  card: Card
+  grabX: number
+  grabY: number
+  startX: number
+  startY: number
+  moved: boolean
+  order: readonly string[]
 }
 
 // The scene owns sprites and their motion; the store owns truth; the
@@ -114,11 +144,14 @@ export async function createTableScene(
   root.sortableChildren = true
   app.stage.addChild(root)
 
+  // Card sizes and anchor points scale with the viewport, so they are
+  // recomputed on resize and shared with the DOM overlay.
+  let metrics = tableMetrics(app.screen.width, app.screen.height)
+  let metricsKey = ''
+
   // Decorations live outside the tweened card pool: they never move
   // between zones, so they are created once and repositioned in place.
   const halo = new Graphics()
-    .roundRect(-(CARD_W + 10) / 2, -(CARD_H + 10) / 2, CARD_W + 10, CARD_H + 10, 10)
-    .stroke({ width: 3, color: 0x7fd1ff })
   halo.zIndex = Z_HALO
   halo.visible = false
   root.addChild(halo)
@@ -137,6 +170,12 @@ export async function createTableScene(
   emptySlot.on('pointertap', () => handlers.onDiscardPileClick())
   root.addChild(emptySlot)
 
+  const fireworks: Fireworks = createFireworks(app, root, Z_FIREWORKS)
+  // Someone who has asked the OS for less motion gets the banner without the
+  // particle storm.
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+  let celebrated = false
+
   interface Derived {
     snapshot: GameSnapshot
     perspective: Seat
@@ -150,6 +189,7 @@ export async function createTableScene(
   // prunes this; the ticker walks it and moves everything.
   const managed = new Map<string, Managed>()
   let haloKey: string | null = null
+  let drag: Drag | null = null
 
   const face = (of: Card): Texture => {
     const texture = faces.get(cardKey(of))
@@ -157,17 +197,26 @@ export async function createTableScene(
     return texture
   }
 
+  // While a drag is live the hand is whatever the pointer has made of it: a
+  // single ungrouped row in the preview order. Auto-grouping has already lost
+  // ownership of the layout at this point (the store turns it off on commit).
+  const currentHandGroups = (): readonly (readonly Card[])[] => {
+    const { snapshot, perspective, handGroups } = last!
+    if (!drag?.moved || !snapshot.game) return handGroups
+    return [orderHand(snapshot.game.hands[perspective], drag.order)]
+  }
+
   // Geometry only - no meld search, no sprite churn - so it is cheap
   // enough to re-run on every resize frame.
   const buildTargets = (): BuildResult => {
-    const { snapshot, perspective, ginKeys, reveal, handGroups } = last!
+    const { snapshot, perspective, ginKeys, reveal } = last!
     const game = snapshot.game
-    const { width, height } = app.screen
+    const { width } = app.screen
+    const { cardW, cardH } = metrics
     const cards: CardTarget[] = []
     if (!game) return { cards, count: null, slot: null, haloKey: null }
 
-    const stockCenter = { x: width / 2 - CARD_W * 0.75, y: height / 2 }
-    const slotX = width / 2 + CARD_W * 0.75
+    const stockCenter = metrics.stock
 
     // The lay-down: a finished hand is proof, so both hands show face up,
     // clustered by their best arrangement, deadwood greyed. Reveal cards
@@ -176,36 +225,46 @@ export async function createTableScene(
     if (reveal) {
       const show = (arrangement: Arrangement, y: number) => {
         const deadwoodKeys = new Set(arrangement.deadwood.map(cardKey))
-        for (const placed of groupedXs([...arrangement.melds, arrangement.deadwood], width)) {
+        for (const placed of groupedXs(
+          [...arrangement.melds, arrangement.deadwood],
+          width,
+          metrics,
+        )) {
           cards.push({
             key: cardKey(placed.held),
             texture: face(placed.held),
             x: placed.x,
             y,
+            w: cardW,
+            h: cardH,
             tint: deadwoodKeys.has(cardKey(placed.held)) ? DEADWOOD_TINT : NO_TINT,
             baseZ: Z_HAND,
             spawn: null,
             onTap: null,
+            held: null,
           })
         }
       }
-      show(reveal.top, EDGE + CARD_H / 2)
-      show(reveal.bottom, height - EDGE - CARD_H / 2)
+      show(reveal.top, metrics.opponentY)
+      show(reveal.bottom, metrics.handY)
       return { cards, count: null, slot: null, haloKey: null }
     }
 
     // The opponent's hand is a row of face-down backs, keyed by position:
     // the viewer never learns which cards they are.
-    groupedXs([game.hands[otherSeat(perspective)]], width).forEach((placed, index) => {
+    groupedXs([game.hands[otherSeat(perspective)]], width, metrics).forEach((placed, index) => {
       cards.push({
         key: `opp:${index}`,
         texture: back,
         x: placed.x,
-        y: EDGE + CARD_H / 2,
+        y: metrics.opponentY,
+        w: cardW,
+        h: cardH,
         tint: NO_TINT,
         baseZ: Z_OPPONENT,
         spawn: stockCenter,
         onTap: null,
+        held: null,
       })
     })
 
@@ -216,12 +275,19 @@ export async function createTableScene(
         texture: back,
         x: stockCenter.x,
         y: stockCenter.y,
+        w: cardW,
+        h: cardH,
         tint: NO_TINT,
         baseZ: Z_PILE,
         spawn: null,
         onTap: handlers.onStockClick,
+        held: null,
       })
-      count = { text: `${game.stock.length}`, x: stockCenter.x, y: stockCenter.y + CARD_H / 2 + 14 }
+      count = {
+        text: `${game.stock.length}`,
+        x: stockCenter.x,
+        y: stockCenter.y + cardH / 2 + 14 * metrics.scale,
+      }
     }
 
     let slot: BuildResult['slot'] = null
@@ -233,37 +299,45 @@ export async function createTableScene(
       cards.push({
         key: cardKey(top),
         texture: face(top),
-        x: slotX,
-        y: height / 2,
+        x: metrics.discard.x,
+        y: metrics.discard.y,
+        w: cardW,
+        h: cardH,
         tint: NO_TINT,
         baseZ: Z_PILE,
         spawn: stockCenter,
         onTap: handlers.onDiscardPileClick,
+        held: null,
       })
     } else {
-      slot = { x: slotX, y: height / 2 }
+      slot = { x: metrics.discard.x, y: metrics.discard.y }
     }
 
     let nextHaloKey: string | null = null
-    for (const placed of groupedXs(handGroups, width)) {
+    for (const placed of groupedXs(currentHandGroups(), width, metrics)) {
       const held = placed.held
-      const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? RAISE : 0
+      const key = cardKey(held)
+      const lifted = drag?.moved && drag.key === key
+      const raised = snapshot.selectedCard && sameCard(held, snapshot.selectedCard) ? metrics.raise : 0
       cards.push({
-        key: cardKey(held),
+        key,
         texture: face(held),
         x: placed.x,
-        y: height - EDGE - CARD_H / 2 - raised,
-        tint: ginKeys.has(cardKey(held)) ? GIN_TINT : NO_TINT,
-        baseZ: Z_HAND,
+        y: metrics.handY - raised,
+        w: lifted ? cardW * DRAG_LIFT : cardW,
+        h: lifted ? cardH * DRAG_LIFT : cardH,
+        tint: ginKeys.has(key) ? GIN_TINT : NO_TINT,
+        baseZ: lifted ? Z_DRAG : Z_HAND,
         spawn: stockCenter,
-        onTap: () => handlers.onCardClick(held),
+        onTap: null, // hand cards resolve tap-vs-drag on pointer release
+        held,
       })
       if (
         snapshot.lastDrawn &&
         snapshot.lastDrawn.seat === perspective &&
         sameCard(held, snapshot.lastDrawn.card)
       ) {
-        nextHaloKey = cardKey(held)
+        nextHaloKey = key
       }
     }
 
@@ -273,8 +347,6 @@ export async function createTableScene(
   const spawn = (target: CardTarget): Managed => {
     const sprite = new Sprite(target.texture)
     sprite.anchor.set(0.5)
-    sprite.width = CARD_W
-    sprite.height = CARD_H
     const from = target.spawn ?? { x: target.x, y: target.y }
     sprite.position.set(from.x, from.y)
     sprite.zIndex = target.baseZ
@@ -304,14 +376,24 @@ export async function createTableScene(
       const sprite = entry.sprite
       if (sprite.texture !== target.texture) sprite.texture = target.texture
       sprite.tint = target.tint
+      sprite.width = target.w
+      sprite.height = target.h
       entry.tx = target.x
       entry.ty = target.y
       entry.baseZ = target.baseZ
       sprite.removeAllListeners('pointertap')
+      sprite.removeAllListeners('pointerdown')
       if (target.onTap) {
         sprite.eventMode = 'static'
         sprite.cursor = 'pointer'
         sprite.on('pointertap', target.onTap)
+      } else if (target.held) {
+        // A hand card is both a tap target and a drag handle; which one it
+        // was is only known on release.
+        const held = target.held
+        sprite.eventMode = 'static'
+        sprite.cursor = 'grab'
+        sprite.on('pointerdown', (event: FederatedPointerEvent) => beginDrag(held, sprite, event))
       } else {
         sprite.eventMode = 'none'
         sprite.cursor = 'default'
@@ -321,11 +403,13 @@ export async function createTableScene(
       if (seen.has(key) || entry.leaving) continue
       entry.leaving = true
       entry.sprite.removeAllListeners('pointertap')
+      entry.sprite.removeAllListeners('pointerdown')
       entry.sprite.eventMode = 'none'
     }
 
     if (count) {
       stockCount.text = count.text
+      stockCount.style.fontSize = 16 * metrics.scale
       stockCount.position.set(count.x, count.y)
       stockCount.visible = true
     } else {
@@ -335,7 +419,13 @@ export async function createTableScene(
     if (slot) {
       emptySlot
         .clear()
-        .roundRect(slot.x - CARD_W / 2, slot.y - CARD_H / 2, CARD_W, CARD_H, 8)
+        .roundRect(
+          slot.x - metrics.cardW / 2,
+          slot.y - metrics.cardH / 2,
+          metrics.cardW,
+          metrics.cardH,
+          8 * metrics.scale,
+        )
         .fill({ color: 0xffffff, alpha: 0.08 })
         .stroke({ width: 2, color: 0xffffff, alpha: 0.5 })
       emptySlot.visible = true
@@ -343,8 +433,100 @@ export async function createTableScene(
       emptySlot.visible = false
     }
 
+    // Redrawn rather than repositioned, because its size follows the cards.
+    const haloW = metrics.cardW + 10 * metrics.scale
+    const haloH = metrics.cardH + 10 * metrics.scale
+    halo
+      .clear()
+      .roundRect(-haloW / 2, -haloH / 2, haloW, haloH, 10 * metrics.scale)
+      .stroke({ width: 3, color: 0x7fd1ff })
+
     haloKey = nextHaloKey
   }
+
+  // --- dragging a card into place ------------------------------------------
+
+  // The pointer may leave the canvas - or the window - before it is released,
+  // and Pixi only sees events over its own canvas, so the end of a drag is
+  // listened for on the window.
+  const endDrag = () => {
+    if (!drag) return
+    const finished = drag
+    drag = null
+    window.removeEventListener('pointerup', endDrag)
+    window.removeEventListener('pointercancel', endDrag)
+    if (finished.moved) handlers.onHandReorder(finished.order)
+    else handlers.onCardClick(finished.card)
+    reconcile()
+  }
+
+  const cancelDrag = () => {
+    if (!drag) return
+    drag = null
+    window.removeEventListener('pointerup', endDrag)
+    window.removeEventListener('pointercancel', endDrag)
+  }
+
+  const beginDrag = (held: Card, sprite: Sprite, event: FederatedPointerEvent) => {
+    if (!last?.snapshot.game) return
+    // Seed from what is on screen, not from the engine order, so turning
+    // auto-grouping off on commit closes the meld gaps without the cards
+    // jumping to new places first.
+    const shown = currentHandGroups().flat().map(cardKey)
+    drag = {
+      key: cardKey(held),
+      card: held,
+      grabX: event.global.x - sprite.x,
+      grabY: event.global.y - sprite.y,
+      startX: event.global.x,
+      startY: event.global.y,
+      moved: false,
+      order: shown,
+    }
+    window.addEventListener('pointerup', endDrag)
+    window.addEventListener('pointercancel', endDrag)
+  }
+
+  const onDragMove = (event: FederatedPointerEvent) => {
+    if (!drag || !last?.snapshot.game) return
+    const px = event.global.x
+    const py = event.global.y
+    if (!drag.moved) {
+      const dx = px - drag.startX
+      const dy = py - drag.startY
+      if (dx * dx + dy * dy < DRAG_SLOP * DRAG_SLOP) return
+      drag.moved = true
+    }
+    const entry = managed.get(drag.key)
+    if (!entry) return
+    // Mid-drag the card belongs to the pointer; the ticker leaves it alone.
+    entry.sprite.position.set(px - drag.grabX, py - drag.grabY)
+    entry.sprite.zIndex = Z_DRAG
+
+    // Drop the card into whichever slot the pointer is nearest, so the
+    // neighbours close up and slide aside through the usual tween.
+    const hand = orderHand(last.snapshot.game.hands[last.perspective], drag.order)
+    const keys = hand.map(cardKey)
+    const from = keys.indexOf(drag.key)
+    if (from < 0) return
+    const xs = groupedXs([hand], app.screen.width, metrics)
+    let nearest = 0
+    let best = Infinity
+    xs.forEach((placed, index) => {
+      const distance = Math.abs(placed.x - px)
+      if (distance < best) {
+        best = distance
+        nearest = index
+      }
+    })
+    drag.order = nearest === from ? keys : moveKey(keys, from, nearest)
+    reconcile()
+  }
+
+  app.stage.eventMode = 'static'
+  // globalpointermove fires wherever the pointer is, not just over a sprite,
+  // which is what a drag needs once the card has slipped out from under it.
+  app.stage.on('globalpointermove', onDragMove)
 
   const tick = (ticker: Ticker) => {
     const dt = ticker.deltaMS
@@ -359,6 +541,8 @@ export async function createTableScene(
         }
         continue
       }
+      // The held card is the pointer's, not the tween's.
+      if (drag?.moved && key === drag.key) continue
       const dx = entry.tx - sprite.x
       const dy = entry.ty - sprite.y
       if (dx * dx + dy * dy < SNAP_PX * SNAP_PX) {
@@ -381,11 +565,25 @@ export async function createTableScene(
     } else {
       halo.visible = false
     }
+    fireworks.update(dt)
   }
   app.ticker.add(tick)
 
-  const onResize = () => reconcile()
+  // Pixi's resizeTo owns the canvas size; this only recomputes what depends
+  // on it and tells the DOM overlay, and only when the size actually changed.
+  const publishMetrics = () => {
+    const key = `${app.screen.width}x${app.screen.height}`
+    if (key === metricsKey) return
+    metricsKey = key
+    metrics = tableMetrics(app.screen.width, app.screen.height)
+    handlers.onMetrics(metrics)
+  }
+  const onResize = () => {
+    publishMetrics()
+    reconcile()
+  }
   app.renderer.on('resize', onResize)
+  publishMetrics()
 
   return {
     update(snapshot, perspective, ginKeys) {
@@ -397,21 +595,40 @@ export async function createTableScene(
               bottom: bestArrangement(game.hands[perspective]),
             }
           : null
+      // A hand that ends under the pointer (the opponent declaring gin)
+      // takes the cards away from the drag.
+      if (reveal) cancelDrag()
       let handGroups: readonly (readonly Card[])[] = []
       if (game && game.phase !== 'handOver') {
         if (snapshot.autoGroup) {
           const arrangement = bestArrangement(game.hands[perspective])
           handGroups = [...arrangement.melds, arrangement.deadwood]
         } else {
-          handGroups = [game.hands[perspective]]
+          handGroups = [orderHand(game.hands[perspective], snapshot.handOrder[perspective])]
         }
       }
       last = { snapshot, perspective, ginKeys, reveal, handGroups }
+
+      // Celebrate once per hand, and only the viewer's own gin.
+      const won =
+        game?.phase === 'handOver' &&
+        game.result?.type === 'gin' &&
+        game.result.winner === perspective
+      if (won && !celebrated) {
+        celebrated = true
+        if (!reducedMotion) fireworks.burst(app.screen.width, app.screen.height)
+      } else if (game && game.phase !== 'handOver') {
+        celebrated = false
+      }
+
       reconcile()
     },
     destroy() {
+      cancelDrag()
       app.ticker.remove(tick)
       app.renderer.off('resize', onResize)
+      app.stage.off('globalpointermove', onDragMove)
+      fireworks.destroy()
       root.destroy({ children: true })
       managed.clear()
     },
@@ -423,6 +640,7 @@ export async function createTableScene(
 function groupedXs(
   groups: readonly (readonly Card[])[],
   width: number,
+  metrics: TableMetrics,
 ): { held: Card; x: number }[] {
   const flat: { held: Card; group: number }[] = []
   groups.forEach((group, index) => {
@@ -430,28 +648,29 @@ function groupedXs(
   })
   if (flat.length === 0) return []
   const boundaries = groups.filter((group) => group.length > 0).length - 1
-  const gaps = Math.max(boundaries, 0) * GROUP_GAP
+  const gaps = Math.max(boundaries, 0) * metrics.groupGap
   const spacing = Math.min(
-    CARD_W + 10,
-    (width - CARD_W - EDGE * 2 - gaps) / Math.max(flat.length - 1, 1),
+    metrics.cardW + 10 * metrics.scale,
+    (width - metrics.cardW - metrics.edge * 2 - gaps) / Math.max(flat.length - 1, 1),
   )
   let x = width / 2 - (spacing * (flat.length - 1) + gaps) / 2
   return flat.map((entry, index) => {
     if (index > 0) {
       x += spacing
-      if (entry.group !== flat[index - 1].group) x += GROUP_GAP
+      if (entry.group !== flat[index - 1].group) x += metrics.groupGap
     }
     return { held: entry.held, x }
   })
 }
 
-// The Knoll set has no back; a drawn one stands in.
+// The Knoll set has no back; a drawn one stands in. Generated at the base
+// size and scaled per sprite, so a resize never regenerates it.
 function backTexture(app: Application): Texture {
   const g = new Graphics()
-    .roundRect(0, 0, CARD_W * 3, CARD_H * 3, 18)
+    .roundRect(0, 0, 270, 378, 18)
     .fill('#27508f')
     .stroke({ width: 8, color: '#ffffff' })
-    .roundRect(16, 16, CARD_W * 3 - 32, CARD_H * 3 - 32, 10)
+    .roundRect(16, 16, 238, 346, 10)
     .stroke({ width: 3, color: '#9db4e8' })
   return app.renderer.generateTexture(g)
 }

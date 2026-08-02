@@ -45,6 +45,8 @@ export function TableCanvas({ snapshot, perspective, ginKeys, handlers }: TableC
       onCardClick: (clicked) => handlersRef.current.onCardClick(clicked),
       onStockClick: () => handlersRef.current.onStockClick(),
       onDiscardPileClick: () => handlersRef.current.onDiscardPileClick(),
+      onHandReorder: (keys) => handlersRef.current.onHandReorder(keys),
+      onMetrics: (metrics) => handlersRef.current.onMetrics(metrics),
     }
     const ready = app
       .init({ resizeTo: host, background: '#1d5c2e', antialias: true })
@@ -71,5 +73,6 @@ export function TableCanvas({ snapshot, perspective, ginKeys, handlers }: TableC
     }
   }, [])
 
-  return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
+  // touchAction none, or a drag across the table scrolls the page under it.
+  return <div ref={hostRef} style={{ width: '100%', height: '100%', touchAction: 'none' }} />
 }
